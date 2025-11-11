@@ -40,7 +40,10 @@ const TheoreticalModelInput: React.FC<TheoreticalModelInputProps> = ({ model, va
     };
 
     const handleProbabilityChange = (key: string, value: string) => {
-        const newProbs = { ...model.jointProbabilities, [key]: value };
+        // Enforce 5 decimal place limit
+        const match = value.match(/^-?\d*\.?\d{0,5}/);
+        const truncatedValue = match ? match[0] : '';
+        const newProbs = { ...model.jointProbabilities, [key]: truncatedValue };
         onUpdate(model.id, { jointProbabilities: newProbs });
     };
 

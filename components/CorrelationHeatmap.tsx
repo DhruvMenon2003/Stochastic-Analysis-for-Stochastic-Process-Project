@@ -1,4 +1,3 @@
-
 import React, { useState, useMemo, useEffect } from 'react';
 import { type PairwiseResult, type RandomVariable, type TheoreticalModel, PairwiseMetrics } from '../types';
 
@@ -48,20 +47,12 @@ const CorrelationHeatmap: React.FC<CorrelationHeatmapProps> = ({ pairwiseResults
     const [selectedMetric, setSelectedMetric] = useState<MetricKey>('distanceCorrelation');
     const [selectedSourceId, setSelectedSourceId] = useState<string>('empirical');
 
-     // Effect to handle metric availability when switching sources
-    useEffect(() => {
-        if (selectedSourceId !== 'empirical' && selectedMetric === 'distanceCorrelation') {
-            setSelectedMetric('mutualInformation');
-        }
-    }, [selectedSourceId, selectedMetric]);
-
-
     const matrixData = useMemo(() => {
         const matrix: (number | undefined)[][] = Array(variables.length).fill(null).map(() => Array(variables.length).fill(undefined));
         
         for (let i = 0; i < variables.length; i++) {
             matrix[i][i] = selectedMetric === 'pearsonCorrelation' ? 1.0 : undefined;
-             if (selectedMetric === 'distanceCorrelation') matrix[i][i] = 0;
+             if (selectedMetric === 'distanceCorrelation') matrix[i][i] = 1.0; // Perfect correlation with self
              if (selectedMetric === 'mutualInformation') {
                  // Self-information could be calculated, but for a correlation matrix, diagonal is often left blank or as 1.
                  // For simplicity, we leave it undefined.
@@ -108,15 +99,12 @@ const CorrelationHeatmap: React.FC<CorrelationHeatmapProps> = ({ pairwiseResults
                     )}
                     <div className="flex flex-wrap items-center gap-2 p-1 bg-gray-100 dark:bg-gray-800 rounded-lg">
                         {METRICS.map(metric => {
-                            const isModel = selectedSourceId !== 'empirical';
-                            const isDisabled = isModel && metric.key === 'distanceCorrelation';
                             return (
                                 <button
                                     key={metric.key}
                                     onClick={() => setSelectedMetric(metric.key)}
-                                    disabled={isDisabled}
-                                    className={`px-3 py-1.5 text-sm rounded-md transition-colors ${selectedMetric === metric.key ? 'bg-blue-600 text-white' : 'bg-white dark:bg-gray-900 hover:bg-gray-200 dark:hover:bg-gray-700'} ${isDisabled ? 'opacity-50 cursor-not-allowed' : ''}`}
-                                    title={isDisabled ? "Distance Correlation is only available for empirical data." : `Select ${metric.label}`}
+                                    className={`px-3 py-1.5 text-sm rounded-md transition-colors ${selectedMetric === metric.key ? 'bg-blue-600 text-white' : 'bg-white dark:bg-gray-900 hover:bg-gray-200 dark:hover:bg-gray-700'}`}
+                                    title={`Select ${metric.label}`}
                                 >
                                     {metric.label}
                                 </button>

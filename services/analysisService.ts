@@ -1,4 +1,3 @@
-
 // FIX: Updated imports to correctly reference the new types.ts and include JointPMF.
 import { type RandomVariable, VariableType, type AnalysisResults, type SingleVarResults, type PairwiseResult, type Distribution, type TheoreticalModel, type ModelFitResult, type SingleVarMetrics, type PairwiseConditionalAnalysis, type ConditionalResult, type JointPMF, PairwiseMetrics } from '../types';
 
@@ -239,6 +238,52 @@ const calculateDistanceCorrelation = (data1: (string | number)[], isNumeric1: bo
     return Math.sqrt(dCov2 / Math.sqrt(dVarA2 * dVarB2));
 };
 
+const calculateDistanceCorrelationFromPMF = (pmf: JointPMF, variables: RandomVariable[]): { [pairKey: string]: number } => {
+    const results: { [pairKey: string]: number } = {};
+    if (pmf.size === 0 || variables.length < 2) return results;
+
+    let maxDecimals = 0;
+    pmf.forEach(prob => {
+        const decimalPart = String(prob).split('.')[1];
+        if (decimalPart) {
+            maxDecimals = Math.max(maxDecimals, decimalPart.length);
+        }
+    });
+
+    const precision = Math.min(maxDecimals, 5);
+    const sampleSize = Math.pow(10, precision);
+
+    const syntheticData: { [varName: string]: (string | number)[] } = {};
+    variables.forEach(v => syntheticData[v.name] = []);
+
+    pmf.forEach((prob, key) => {
+        const values = key.split(',');
+        const count = Math.round(prob * sampleSize);
+        for (let i = 0; i < count; i++) {
+            variables.forEach((v, index) => {
+                syntheticData[v.name].push(values[index]);
+            });
+        }
+    });
+
+    for (let i = 0; i < variables.length; i++) {
+        for (let j = i + 1; j < variables.length; j++) {
+            const v1 = variables[i];
+            const v2 = variables[j];
+            const pairKey = `${v1.id}-${v2.id}`;
+            
+            const data1 = syntheticData[v1.name];
+            const data2 = syntheticData[v2.name];
+
+            const dCorr = calculateDistanceCorrelation(data1, v1.type === VariableType.Numerical, data2, v2.type === VariableType.Numerical);
+            results[pairKey] = dCorr;
+        }
+    }
+
+    return results;
+};
+
+
 const calculateMutualInformationFromPMF = (jointPMF: JointPMF, varNames: string[], v1_name: string, v2_name: string): number => {
     const p_x = calculateMarginalPMF(jointPMF, varNames, v1_name);
     const p_y = calculateMarginalPMF(jointPMF, varNames, v2_name);
@@ -473,11 +518,18 @@ export const performFullAnalysis = (variables: RandomVariable[], theoreticalMode
 
     // Pairwise & Conditional analysis
     if (variables.length > 1) {
+        // Pre-calculate model distance correlations
+        const modelDistanceCorrelations = new Map<string, { [pairKey: string]: number }>();
+        parsedModels.forEach(({ model, pmf }) => {
+            modelDistanceCorrelations.set(model.id, calculateDistanceCorrelationFromPMF(pmf, variables));
+        });
+
         for (let i = 0; i < variables.length; i++) {
             for (let j = i + 1; j < variables.length; j++) {
                 const v1 = variables[i];
                 const v2 = variables[j];
                 const pairKey = `${v1.id}-${v2.id}`;
+                const reversePairKey = `${v2.id}-${v1.id}`;
                 
                 // Pairwise Correlations
                 const pairwiseResult: PairwiseResult = { 
@@ -503,7 +555,7 @@ export const performFullAnalysis = (variables: RandomVariable[], theoreticalMode
                     const theoreticalMetrics: PairwiseMetrics = {};
                     theoreticalMetrics.mutualInformation = calculateMutualInformationFromPMF(pmf, varNames, v1.name, v2.name);
                     theoreticalMetrics.pearsonCorrelation = calculatePearsonCorrelationFromPMF(pmf, varNames, v1, v2);
-                    // Distance Correlation from PMF is not implemented due to complexity
+                    theoreticalMetrics.distanceCorrelation = modelDistanceCorrelations.get(model.id)?.[pairKey] ?? modelDistanceCorrelations.get(model.id)?.[reversePairKey];
                     pairwiseResult.theoretical[model.id] = theoreticalMetrics;
                 });
 
