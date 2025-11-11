@@ -1,4 +1,3 @@
-
 import React from 'react';
 import { type PairwiseResult } from '../types';
 
@@ -39,13 +38,16 @@ const PairwiseAnalysis: React.FC<PairwiseAnalysisProps> = ({ pairwiseResults }) 
                                     {result.var1_name} &amp; {result.var2_name}
                                 </td>
                                 <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500 dark:text-gray-300 font-mono">
-                                    {formatNumber(result.distanceCorrelation)}
+                                    {/* FIX: Access metrics via the 'empirical' property. */}
+                                    {formatNumber(result.empirical.distanceCorrelation)}
                                 </td>
                                 <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500 dark:text-gray-300 font-mono">
-                                    {formatNumber(result.pearsonCorrelation)}
+                                    {/* FIX: Access metrics via the 'empirical' property. */}
+                                    {formatNumber(result.empirical.pearsonCorrelation)}
                                 </td>
                                 <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500 dark:text-gray-300 font-mono">
-                                    {formatNumber(result.mutualInformation)}
+                                    {/* FIX: Access metrics via the 'empirical' property. */}
+                                    {formatNumber(result.empirical.mutualInformation)}
                                 </td>
                             </tr>
                         ))}
