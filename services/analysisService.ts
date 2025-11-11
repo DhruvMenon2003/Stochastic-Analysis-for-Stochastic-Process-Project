@@ -1,638 +1,660 @@
-// FIX: Updated imports to correctly reference the new types.ts and include JointPMF.
-import { type RandomVariable, VariableType, type AnalysisResults, type SingleVarResults, type PairwiseResult, type Distribution, type TheoreticalModel, type ModelFitResult, type SingleVarMetrics, type PairwiseConditionalAnalysis, type ConditionalResult, type JointPMF, PairwiseMetrics } from '../types';
+import {
+    type RandomVariable,
+    type AnalysisResults,
+    VariableType,
+    type TheoreticalModel,
+    type SingleVarResults,
+    type PairwiseResult,
+    type ModelFitResult,
+    type JointPMF,
+    type Distribution,
+    type SingleVarMetrics,
+    type PairwiseConditionalAnalysis,
+    type ConditionalResult,
+    type PairwiseMetrics,
+} from '../types';
 
-// --- UTILITY & PARSING ---
+// --- UTILITY FUNCTIONS ---
 
-export const parseInput = (text: string): { name: string, data: string[] }[] => {
-    const lines = text.trim().split('\n').filter(line => line.trim() !== '');
-    if (lines.length < 2) {
-        throw new Error("Input must have a header line and at least one data row.");
+/**
+ * Calculates the mean of a numerical distribution.
+ */
+const calculateMean = (dist: Distribution): number => {
+    return dist.reduce((acc, { value, probability }) => acc + Number(value) * probability, 0);
+};
+
+/**
+ * Calculates the variance of a numerical distribution.
+ */
+const calculateVariance = (dist: Distribution, mean: number): number => {
+    return dist.reduce((acc, { value, probability }) => acc + Math.pow(Number(value) - mean, 2) * probability, 0);
+};
+
+/**
+ * Calculates the mode(s) of a distribution.
+ */
+const calculateMode = (dist: Distribution): (string | number)[] => {
+    if (dist.length === 0) return [];
+    const maxProb = Math.max(...dist.map(p => p.probability));
+    // Use a small epsilon for floating point comparison
+    return dist.filter(p => Math.abs(p.probability - maxProb) < 1e-9).map(p => p.value);
+};
+
+/**
+ * Calculates the median of a distribution.
+ */
+const calculateMedian = (dist: Distribution, type: VariableType, ordinalOrder: string[]): string | number | undefined => {
+    if (dist.length === 0) return undefined;
+    
+    let sortedDist = [...dist];
+    if (type === VariableType.Numerical) {
+        sortedDist.sort((a, b) => Number(a.value) - Number(b.value));
+    } else if (type === VariableType.Ordinal && ordinalOrder.length > 0) {
+        sortedDist.sort((a, b) => ordinalOrder.indexOf(String(a.value)) - ordinalOrder.indexOf(String(b.value)));
     }
+    // For nominal, median is not well-defined, but we can return the first value past 0.5 cumulative for completeness.
 
-    const header = lines[0].split(',').map(h => h.trim());
-    if (header.some(h => h === '')) {
-        throw new Error("Header cannot contain empty variable names.");
+    let cumulative = 0;
+    for (const point of sortedDist) {
+        cumulative += point.probability;
+        if (cumulative >= 0.5) {
+            return point.value;
+        }
     }
-    const numVars = header.length;
+    // Should not be reached if probabilities sum to 1, but as a fallback:
+    return sortedDist[sortedDist.length - 1].value;
+};
 
-    const dataRows = lines.slice(1);
-    const columns: string[][] = Array(numVars).fill(0).map(() => []);
 
-    dataRows.forEach((line, rowIndex) => {
-        const values = line.split(',').map(v => v.trim());
-        if (values.length !== numVars) {
-            throw new Error(`Row ${rowIndex + 1} has ${values.length} values, but header has ${numVars} variables.`);
-        }
-        if (values.some(v => v === '')) {
-            throw new Error(`Row ${rowIndex + 1} ("${line.substring(0, 30)}...") contains missing values. Please ensure all values are filled.`);
-        }
-
-        values.forEach((value, colIndex) => {
-            columns[colIndex].push(value);
-        });
-    });
-
-    return header.map((name, index) => ({
-        name,
-        data: columns[index],
+/**
+ * Converts a PMF map to a Distribution array with cumulative probabilities.
+ */
+const pmfToDistribution = (pmf: JointPMF, type: VariableType, ordinalOrder: string[]): Distribution => {
+    const dist: { value: string | number, probability: number }[] = Array.from(pmf.entries()).map(([value, probability]) => ({
+        value: type === VariableType.Numerical ? Number(value) : value,
+        probability,
     }));
-};
 
-
-export const detectVariableType = (data: string[]): VariableType => {
-    const isNumeric = data.every(d => !isNaN(parseFloat(d)) && isFinite(Number(d)));
-    if (isNumeric) return VariableType.Numerical;
-    return VariableType.Nominal;
-};
-
-// --- SINGLE VARIABLE CALCULATIONS ---
-
-type MarginalPMF = Map<string | number, number>;
-
-const calculatePMF = (data: (string | number)[]): MarginalPMF => {
-    const counts = new Map<string | number, number>();
-    data.forEach(val => {
-        counts.set(val, (counts.get(val) || 0) + 1);
-    });
-    const total = data.length;
-    const pmf: MarginalPMF = new Map<string | number, number>();
-    counts.forEach((count, val) => {
-        pmf.set(val, count / total);
-    });
-    return pmf;
-};
-
-const getDistributionFromPMF = (pmf: MarginalPMF, type: VariableType, order: string[]): Distribution => {
-    let sortedKeys: (string|number)[];
-    const numericKeys = Array.from(pmf.keys()).every(k => typeof k === 'number' || !isNaN(Number(k)));
-
-    if (type === VariableType.Numerical && numericKeys) {
-        sortedKeys = Array.from(pmf.keys()).map(Number).sort((a, b) => a - b);
-    } else if (type === VariableType.Ordinal && order.length > 0) {
-        sortedKeys = order;
+    if (type === VariableType.Numerical) {
+        dist.sort((a, b) => Number(a.value) - Number(b.value));
+    } else if (type === VariableType.Ordinal && ordinalOrder.length > 0) {
+        dist.sort((a, b) => ordinalOrder.indexOf(String(a.value)) - ordinalOrder.indexOf(String(b.value)));
     } else {
-        sortedKeys = Array.from(pmf.keys()).sort();
+        // Sort by value for consistency if not numerical or ordered ordinal
+        dist.sort((a, b) => String(a.value).localeCompare(String(b.value)));
     }
     
     let cumulative = 0;
-    const distribution: Distribution = [];
-
-    sortedKeys.forEach(key => {
-        const prob = pmf.get(key) || pmf.get(String(key)) || 0;
-        if (prob > 0) {
-            cumulative += prob;
-            distribution.push({
-                value: key,
-                probability: prob,
-                cumulative: cumulative
-            });
-        }
+    return dist.map(p => {
+        cumulative += p.probability;
+        return { ...p, cumulative };
     });
-    
-    return distribution;
-}
-
-
-const calculateMeanFromPMF = (pmf: MarginalPMF): number => {
-    let mean = 0;
-    pmf.forEach((prob, val) => {
-        mean += Number(val) * prob;
-    });
-    return mean;
 };
 
-const calculateVarianceFromPMF = (pmf: MarginalPMF, mean: number): number => {
-    let variance = 0;
-    pmf.forEach((prob, val) => {
-        variance += Math.pow(Number(val) - mean, 2) * prob;
-    });
-    return variance;
-};
+/**
+ * Calculates single variable metrics from a PMF.
+ */
+const getSingleVarMetrics = (pmf: JointPMF, type: VariableType, ordinalOrder: string[]): SingleVarMetrics => {
+    const distribution = pmfToDistribution(pmf, type, ordinalOrder);
+    const metrics: SingleVarMetrics = {
+        pmf: distribution,
+        mode: calculateMode(distribution),
+        median: calculateMedian(distribution, type, ordinalOrder),
+    };
 
-const calculateModeFromPMF = (pmf: MarginalPMF): (string | number)[] => {
-    let maxProb = 0;
-    pmf.forEach(prob => {
-        if (prob > maxProb) maxProb = prob;
-    });
-    if (maxProb <= 0) return [];
-    
-    const modes: (string | number)[] = [];
-    pmf.forEach((prob, val) => {
-        if (Math.abs(prob - maxProb) < 1e-9) modes.push(val);
-    });
-    // Check if all values are equally likely (uniform)
-    if (modes.length === pmf.size && pmf.size > 1) return [];
-    return modes;
-};
-
-const calculateMedianFromDistribution = (dist: Distribution): string | number => {
-    const medianEntry = dist.find(d => d.cumulative >= 0.5);
-    return medianEntry ? medianEntry.value : dist[dist.length - 1]?.value;
-};
-
-const calculateMetricsFromPMF = (pmf: MarginalPMF, variable: RandomVariable): SingleVarMetrics => {
-    const metrics: SingleVarMetrics = { pmf: [] };
-    const numericData = variable.type === VariableType.Numerical;
-
-    metrics.pmf = getDistributionFromPMF(pmf, variable.type, variable.ordinalOrder);
-
-    if (numericData) {
-        const mean = calculateMeanFromPMF(pmf);
-        metrics.mean = mean;
-        metrics.variance = calculateVarianceFromPMF(pmf, mean);
+    if (type === VariableType.Numerical && distribution.every(p => !isNaN(Number(p.value)))) {
+        metrics.mean = calculateMean(distribution);
+        metrics.variance = calculateVariance(distribution, metrics.mean);
     }
-    if (variable.type === VariableType.Nominal || variable.type === VariableType.Ordinal) {
-        metrics.mode = calculateModeFromPMF(pmf);
-    }
-    if (variable.type === VariableType.Ordinal && variable.ordinalOrder.length > 0) {
-        metrics.median = calculateMedianFromDistribution(metrics.pmf);
-    }
+
     return metrics;
 };
 
 
-// --- PAIRWISE DEPENDENCE CALCULATIONS ---
-const calculateMean = (data: number[]): number => data.reduce((s, v) => s + v, 0) / data.length;
-const calculateVariance = (data: number[], mean: number): number => data.reduce((s, v) => s + Math.pow(v - mean, 2), 0) / data.length;
+// --- CORE LOGIC FUNCTIONS ---
 
-const calculatePearsonCorrelation = (data1: number[], data2: number[]): number => {
-    if (data1.length !== data2.length) throw new Error("Data lengths must match for Pearson correlation.");
-    const n = data1.length;
-    const mean1 = calculateMean(data1);
-    const mean2 = calculateMean(data2);
-    const stdDev1 = Math.sqrt(calculateVariance(data1, mean1));
-    const stdDev2 = Math.sqrt(calculateVariance(data2, mean2));
-    if (stdDev1 === 0 || stdDev2 === 0) return NaN;
-    let covariance = 0;
-    for (let i = 0; i < n; i++) covariance += (data1[i] - mean1) * (data2[i] - mean2);
-    return (covariance / n) / (stdDev1 * stdDev2);
+/**
+ * Calculates the joint probability mass function from the raw data.
+ */
+const getEmpiricalJointPMF = (variables: RandomVariable[]): JointPMF => {
+    const jointPMF: JointPMF = new Map();
+    const numSamples = variables[0]?.data.length || 0;
+    if (numSamples === 0) return jointPMF;
+
+    for (let i = 0; i < numSamples; i++) {
+        const outcome = variables.map(v => v.data[i]).join(',');
+        jointPMF.set(outcome, (jointPMF.get(outcome) || 0) + 1);
+    }
+
+    for (const [outcome, count] of jointPMF.entries()) {
+        jointPMF.set(outcome, count / numSamples);
+    }
+
+    return jointPMF;
 };
 
-const calculateMutualInformation = (data1: (string | number)[], data2: (string | number)[]): number => {
-    if (data1.length !== data2.length) throw new Error("Data lengths must match.");
-    const n = data1.length;
-    const p1 = calculatePMF(data1);
-    const p2 = calculatePMF(data2);
-    const jointCounts = new Map<string, number>();
-    for (let i = 0; i < n; i++) {
-        const key = `${data1[i]}__${data2[i]}`;
-        jointCounts.set(key, (jointCounts.get(key) || 0) + 1);
+/**
+ * Marginalizes a joint PMF to get the PMF of a subset of variables.
+ */
+const getMarginalPMF = (jointPMF: JointPMF, varIndicesToKeep: number[], numTotalVars: number): JointPMF => {
+    const marginalPMF: JointPMF = new Map();
+    for (const [outcome, prob] of jointPMF.entries()) {
+        const values = outcome.split(',');
+        if (values.length !== numTotalVars) continue;
+        const marginalKey = varIndicesToKeep.map(i => values[i]).join(',');
+        marginalPMF.set(marginalKey, (marginalPMF.get(marginalKey) || 0) + prob);
     }
+    return marginalPMF;
+};
+
+/**
+ * Calculates Pearson correlation for two numerical variables.
+ */
+const calculatePearsonCorrelation = (data1: string[], data2: string[]): number => {
+    const n = data1.length;
+    const numData1 = data1.map(Number);
+    const numData2 = data2.map(Number);
+    
+    const mean1 = numData1.reduce((a, b) => a + b, 0) / n;
+    const mean2 = numData2.reduce((a, b) => a + b, 0) / n;
+    
+    const stdDev1 = Math.sqrt(numData1.map(x => Math.pow(x - mean1, 2)).reduce((a, b) => a + b, 0) / n);
+    const stdDev2 = Math.sqrt(numData2.map(x => Math.pow(x - mean2, 2)).reduce((a, b) => a + b, 0) / n);
+    
+    if (stdDev1 === 0 || stdDev2 === 0) return 0;
+
+    let cov = 0;
+    for (let i = 0; i < n; i++) {
+        cov += (numData1[i] - mean1) * (numData2[i] - mean2);
+    }
+    cov /= n;
+
+    return cov / (stdDev1 * stdDev2);
+};
+
+/**
+ * Calculates mutual information between two variables from their PMFs.
+ */
+const calculateMutualInformation = (jointPMF: JointPMF, marginal1: JointPMF, marginal2: JointPMF): number => {
     let mi = 0;
-    jointCounts.forEach((count, key) => {
-        const [val1, val2] = key.split('__');
-        const p_xy = count / n;
-        const p_x = p1.get(val1) || p1.get(Number(val1)) || 0;
-        const p_y = p2.get(val2) || p2.get(Number(val2)) || 0;
-        if (p_x > 0 && p_y > 0 && p_xy > 0) mi += p_xy * Math.log2(p_xy / (p_x * p_y));
-    });
+    for (const [jointKey, jointProb] of jointPMF.entries()) {
+        const [key1, key2] = jointKey.split(',');
+        const prob1 = marginal1.get(key1) || 0;
+        const prob2 = marginal2.get(key2) || 0;
+        if (jointProb > 1e-9 && prob1 > 1e-9 && prob2 > 1e-9) {
+            mi += jointProb * Math.log2(jointProb / (prob1 * prob2));
+        }
+    }
     return mi;
 };
 
-const getDistanceMatrix = (data: (string | number)[], isNumeric: boolean) => {
-    const n = data.length;
-    const matrix = Array(n).fill(0).map(() => Array(n).fill(0));
+/**
+ * Calculates distance correlation.
+ */
+ const calculateDistanceCorrelation = (data1: string[], data2: string[]): number => {
+    const n = data1.length;
+    if (n < 2) return 0;
+
+    const isNumeric1 = detectVariableType(data1) === VariableType.Numerical;
+    const isNumeric2 = detectVariableType(data2) === VariableType.Numerical;
+
+    const dist = (a: string, b: string, isNumeric: boolean) => isNumeric ? Math.abs(Number(a) - Number(b)) : (a === b ? 0 : 1);
+    
+    const a = Array.from({ length: n }, () => Array(n).fill(0));
+    const b = Array.from({ length: n }, () => Array(n).fill(0));
+
     for (let i = 0; i < n; i++) {
         for (let j = i; j < n; j++) {
-            let dist: number = isNumeric ? Math.abs(Number(data[i]) - Number(data[j])) : (data[i] === data[j] ? 0 : 1);
-            matrix[i][j] = dist;
-            matrix[j][i] = dist;
+            a[i][j] = a[j][i] = dist(data1[i], data1[j], isNumeric1);
+            b[i][j] = b[j][i] = dist(data2[i], data2[j], isNumeric2);
         }
     }
-    return matrix;
-};
 
-const doubleCenterMatrix = (matrix: number[][]) => {
-    const n = matrix.length;
-    const rowMeans = matrix.map(row => row.reduce((a, b) => a + b, 0) / n);
-    const colMeans = Array(n).fill(0).map((_, j) => matrix.reduce((sum, row) => sum + row[j], 0) / n);
-    const totalMean = rowMeans.reduce((a, b) => a + b, 0) / n;
-    const centered = Array(n).fill(0).map(() => Array(n).fill(0));
+    const doubleCenter = (matrix: number[][]): number[][] => {
+        const centered = Array.from({ length: n }, () => Array(n).fill(0));
+        const rowMeans = matrix.map(row => row.reduce((s, v) => s + v, 0) / n);
+        const colMeans = rowMeans; // symmetric
+        const totalMean = rowMeans.reduce((s, v) => s + v, 0) / n;
+        for (let i = 0; i < n; i++) {
+            for (let j = 0; j < n; j++) {
+                centered[i][j] = matrix[i][j] - rowMeans[i] - colMeans[j] + totalMean;
+            }
+        }
+        return centered;
+    };
+    
+    const A = doubleCenter(a);
+    const B = doubleCenter(b);
+    
+    let dCov2 = 0, dVar1_2 = 0, dVar2_2 = 0;
     for (let i = 0; i < n; i++) {
         for (let j = 0; j < n; j++) {
-            centered[i][j] = matrix[i][j] - rowMeans[i] - colMeans[j] + totalMean;
+            dCov2 += A[i][j] * B[i][j];
+            dVar1_2 += A[i][j] * A[i][j];
+            dVar2_2 += B[i][j] * B[i][j];
         }
     }
-    return centered;
-};
-
-
-const calculateDistanceCorrelation = (data1: (string | number)[], isNumeric1: boolean, data2: (string | number)[], isNumeric2: boolean): number => {
-    if (data1.length !== data2.length) throw new Error("Data lengths must match.");
-    const n = data1.length;
-    if (n === 0) return NaN;
-    const centeredA = doubleCenterMatrix(getDistanceMatrix(data1, isNumeric1));
-    const centeredB = doubleCenterMatrix(getDistanceMatrix(data2, isNumeric2));
-    let dCov2 = 0, dVarA2 = 0, dVarB2 = 0;
-    for (let i = 0; i < n; i++) {
-        for (let j = 0; j < n; j++) {
-            dCov2 += centeredA[i][j] * centeredB[i][j];
-            dVarA2 += centeredA[i][j] * centeredA[i][j];
-            dVarB2 += centeredB[i][j] * centeredB[i][j];
-        }
-    }
+    
     dCov2 /= (n * n);
-    dVarA2 /= (n * n);
-    dVarB2 /= (n * n);
-    if (dVarA2 <= 0 || dVarB2 <= 0) return 0;
-    return Math.sqrt(dCov2 / Math.sqrt(dVarA2 * dVarB2));
+    dVar1_2 /= (n * n);
+    dVar2_2 /= (n * n);
+    
+    if (dVar1_2 <= 1e-9 || dVar2_2 <= 1e-9) return 0;
+
+    return Math.sqrt(Math.max(0, dCov2 / Math.sqrt(dVar1_2 * dVar2_2)));
 };
 
-const calculateDistanceCorrelationFromPMF = (pmf: JointPMF, variables: RandomVariable[]): { [pairKey: string]: number } => {
-    const results: { [pairKey: string]: number } = {};
-    if (pmf.size === 0 || variables.length < 2) return results;
+/**
+ * Calculates conditional distributions for a pair of variables.
+ */
+const getConditionalDistributions = (
+    jointPMF: JointPMF,
+    marginal1: JointPMF,
+    marginal2: JointPMF,
+    var1: RandomVariable,
+    var2: RandomVariable
+): { [givenVarName: string]: ConditionalResult[] } => {
+    const results: { [givenVarName: string]: ConditionalResult[] } = {
+        [var1.name]: [],
+        [var2.name]: [],
+    };
+    const var1IsNumeric = var1.type === VariableType.Numerical;
+    const var2IsNumeric = var2.type === VariableType.Numerical;
 
-    let maxDecimals = 0;
-    pmf.forEach(prob => {
-        const decimalPart = String(prob).split('.')[1];
-        if (decimalPart) {
-            maxDecimals = Math.max(maxDecimals, decimalPart.length);
+    // P(var1 | var2)
+    for (const [val2, prob2] of marginal2.entries()) {
+        if(prob2 < 1e-9) continue;
+        const conditionalDist: { value: string, probability: number }[] = [];
+        for (const [val1] of marginal1.entries()) {
+            const jointProb = jointPMF.get(`${val1},${val2}`) || 0;
+            conditionalDist.push({ value: val1, probability: jointProb / prob2 });
         }
-    });
-
-    const precision = Math.min(maxDecimals, 5);
-    const sampleSize = Math.pow(10, precision);
-
-    const syntheticData: { [varName: string]: (string | number)[] } = {};
-    variables.forEach(v => syntheticData[v.name] = []);
-
-    pmf.forEach((prob, key) => {
-        const values = key.split(',');
-        const count = Math.round(prob * sampleSize);
-        for (let i = 0; i < count; i++) {
-            variables.forEach((v, index) => {
-                syntheticData[v.name].push(values[index]);
-            });
+        
+        const dist = pmfToDistribution(new Map(conditionalDist.map(i => [i.value, i.probability])), var1.type, var1.ordinalOrder);
+        const result: ConditionalResult = { conditionalVariable: var1.name, givenVariable: var2.name, conditionValue: val2, distribution: dist };
+        if (var1IsNumeric) {
+            result.mean = calculateMean(dist);
+            result.variance = calculateVariance(dist, result.mean);
         }
-    });
-
-    for (let i = 0; i < variables.length; i++) {
-        for (let j = i + 1; j < variables.length; j++) {
-            const v1 = variables[i];
-            const v2 = variables[j];
-            const pairKey = `${v1.id}-${v2.id}`;
-            
-            const data1 = syntheticData[v1.name];
-            const data2 = syntheticData[v2.name];
-
-            const dCorr = calculateDistanceCorrelation(data1, v1.type === VariableType.Numerical, data2, v2.type === VariableType.Numerical);
-            results[pairKey] = dCorr;
-        }
+        results[var2.name].push(result);
     }
+    
+    // P(var2 | var1)
+    for (const [val1, prob1] of marginal1.entries()) {
+         if(prob1 < 1e-9) continue;
+        const conditionalDist: { value: string, probability: number }[] = [];
+        for (const [val2] of marginal2.entries()) {
+            const jointProb = jointPMF.get(`${val1},${val2}`) || 0;
+            conditionalDist.push({ value: val2, probability: jointProb / prob1 });
+        }
 
+        const dist = pmfToDistribution(new Map(conditionalDist.map(i => [i.value, i.probability])), var2.type, var2.ordinalOrder);
+        const result: ConditionalResult = { conditionalVariable: var2.name, givenVariable: var1.name, conditionValue: val1, distribution: dist };
+        if (var2IsNumeric) {
+            result.mean = calculateMean(dist);
+            result.variance = calculateVariance(dist, result.mean);
+        }
+        results[var1.name].push(result);
+    }
+    
     return results;
 };
 
-
-const calculateMutualInformationFromPMF = (jointPMF: JointPMF, varNames: string[], v1_name: string, v2_name: string): number => {
-    const p_x = calculateMarginalPMF(jointPMF, varNames, v1_name);
-    const p_y = calculateMarginalPMF(jointPMF, varNames, v2_name);
-    const v1_idx = varNames.indexOf(v1_name);
-    const v2_idx = varNames.indexOf(v2_name);
-
-    let mi = 0;
-    jointPMF.forEach((p_xy, key) => {
-        const values = key.split(',');
-        const v1_val = values[v1_idx];
-        const v2_val = values[v2_idx];
-        const p1 = p_x.get(v1_val) || p_x.get(Number(v1_val)) || 0;
-        const p2 = p_y.get(v2_val) || p_y.get(Number(v2_val)) || 0;
-        if (p1 > 0 && p2 > 0 && p_xy > 0) {
-            mi += p_xy * Math.log2(p_xy / (p1 * p2));
-        }
-    });
-    return mi;
-};
-
-const calculatePearsonCorrelationFromPMF = (jointPMF: JointPMF, varNames: string[], v1: RandomVariable, v2: RandomVariable): number | undefined => {
-    if (v1.type !== VariableType.Numerical || v2.type !== VariableType.Numerical) return undefined;
-    
-    const p_x = calculateMarginalPMF(jointPMF, varNames, v1.name);
-    const p_y = calculateMarginalPMF(jointPMF, varNames, v2.name);
-
-    const mean_x = calculateMeanFromPMF(p_x);
-    const mean_y = calculateMeanFromPMF(p_y);
-    const var_x = calculateVarianceFromPMF(p_x, mean_x);
-    const var_y = calculateVarianceFromPMF(p_y, mean_y);
-
-    if (var_x === 0 || var_y === 0) return NaN;
-
-    const v1_idx = varNames.indexOf(v1.name);
-    const v2_idx = varNames.indexOf(v2.name);
-    let E_xy = 0;
-    jointPMF.forEach((p_xy, key) => {
-        const values = key.split(',');
-        const val1 = Number(values[v1_idx]);
-        const val2 = Number(values[v2_idx]);
-        E_xy += val1 * val2 * p_xy;
-    });
-
-    const covariance = E_xy - (mean_x * mean_y);
-    return covariance / (Math.sqrt(var_x) * Math.sqrt(var_y));
-};
-
-// --- MODEL & JOINT DISTRIBUTION ---
-
-// FIX: Removed local JointPMF type definition, as it is now imported from types.ts.
-const getEmpiricalJointPMF = (variables: RandomVariable[]): JointPMF => {
-    const pmf: JointPMF = new Map();
-    const n = variables[0]?.data.length || 0;
-    if (n === 0) return pmf;
-    const counts = new Map<string, number>();
-    for (let i = 0; i < n; i++) {
-        const key = variables.map(v => v.data[i]).join(',');
-        counts.set(key, (counts.get(key) || 0) + 1);
-    }
-    counts.forEach((count, key) => pmf.set(key, count / n));
-    return pmf;
-};
-
-const parseTheoreticalModel = (model: TheoreticalModel, varNames: string[]): JointPMF => {
+/**
+ * Parses a theoretical model's distribution string into a JointPMF.
+ */
+const parseTheoreticalModel = (model: TheoreticalModel, varNamesInOrder: string[]): JointPMF | string => {
     const lines = model.distribution.trim().split('\n');
-    if (lines.length < 2) throw new Error(`Model "${model.name}" has no data rows.`);
+    if (lines.length < 2) return "Model distribution is empty or invalid.";
+
     const header = lines[0].split(',').map(h => h.trim());
-    const probIndex = header.lastIndexOf('Probability');
-    if (probIndex === -1) throw new Error(`Model "${model.name}" is missing 'Probability'.`);
-    const modelVarNames = header.slice(0, probIndex).concat(header.slice(probIndex + 1));
-    if (modelVarNames.length !== varNames.length || !varNames.every(v => modelVarNames.includes(v))) {
-        throw new Error(`Model "${model.name}" variables do not match data.`);
+    const probIndex = header.indexOf('Probability');
+    if (probIndex === -1) return "Model distribution must have a 'Probability' column.";
+    
+    const modelVarNames = header.slice(0, probIndex);
+    if(JSON.stringify(modelVarNames) !== JSON.stringify(varNamesInOrder)) {
+        return `Model variable order (${modelVarNames.join(',')}) does not match data order (${varNamesInOrder.join(',')}).`;
     }
-    const pmf: JointPMF = new Map();
+
+    const jointPMF: JointPMF = new Map();
     let totalProb = 0;
+
     for (let i = 1; i < lines.length; i++) {
-        const values = lines[i].split(',').map(v => v.trim());
+        const values = lines[i].split(',');
+        if (values.length !== header.length) continue;
         const prob = parseFloat(values[probIndex]);
-        if (isNaN(prob)) throw new Error(`Invalid probability in model "${model.name}" at row ${i}.`);
-        const stateValues = values.slice(0, probIndex).concat(values.slice(probIndex + 1));
-        const key = varNames.map(name => stateValues[modelVarNames.indexOf(name)]).join(',');
-        pmf.set(key, (pmf.get(key) || 0) + prob);
+        if (isNaN(prob) || prob < 0) return `Invalid probability in row ${i + 1}: ${values[probIndex]}`;
+        
+        const key = values.slice(0, probIndex).join(',');
+        jointPMF.set(key, (jointPMF.get(key) || 0) + prob);
         totalProb += prob;
     }
+
     if (Math.abs(totalProb - 1.0) > 1e-5) {
-        throw new Error(`Probabilities in model "${model.name}" sum to ${totalProb.toFixed(6)}.`);
+       // This is handled in the UI, but could be a warning here.
     }
-    return pmf;
-};
-
-const calculateMarginalPMF = (jointPMF: JointPMF, varNames: string[], targetVarName: string): MarginalPMF => {
-    const marginal: MarginalPMF = new Map();
-    const targetIndex = varNames.indexOf(targetVarName);
-    if (targetIndex === -1) return marginal;
-
-    jointPMF.forEach((prob, key) => {
-        const values = key.split(',');
-        const targetValue = values[targetIndex];
-        const isNumeric = !isNaN(parseFloat(targetValue));
-        const mapKey = isNumeric ? Number(targetValue) : targetValue;
-        marginal.set(mapKey, (marginal.get(mapKey) || 0) + prob);
-    });
-    return marginal;
-};
-
-
-// --- CONDITIONAL ANALYSIS (REFACTORED) ---
-const calculateConditionalAnalysisForPair = (jointPMF: JointPMF, v1: RandomVariable, v2: RandomVariable, allVarNames: string[]): { [key: string]: ConditionalResult[] } => {
-    const v1Index = allVarNames.indexOf(v1.name);
-    const v2Index = allVarNames.indexOf(v2.name);
-    const finalResults: { [key: string]: ConditionalResult[] } = {};
-
-    // 1. Calculate the marginal for the 'given' variable (v2).
-    const marginalV2 = calculateMarginalPMF(jointPMF, allVarNames, v2.name);
-
-    // 2. Group joint probabilities by the value of the conditioning variable (v2).
-    // Structure: Map<v2_value, unnormalized_conditional_pmf_for_v1>
-    const groupedPMFs = new Map<string, MarginalPMF>();
-    jointPMF.forEach((p_joint, key) => {
-        const values = key.split(',');
-        const v1_value_str = values[v1Index];
-        const v2_value_str = values[v2Index];
-        
-        if (!groupedPMFs.has(v2_value_str)) {
-            groupedPMFs.set(v2_value_str, new Map());
-        }
-        const conditionalPMF = groupedPMFs.get(v2_value_str)!;
-        
-        const mapKey = v1.type === VariableType.Numerical ? Number(v1_value_str) : v1_value_str;
-        conditionalPMF.set(mapKey, (conditionalPMF.get(mapKey) || 0) + p_joint);
-    });
-
-    // 3. Normalize each group to get the final conditional PMFs and calculate metrics.
-    groupedPMFs.forEach((unnormalizedPMF, v2_value_str) => {
-        const p_v2 = marginalV2.get(v2_value_str) || marginalV2.get(Number(v2_value_str)) || 0;
-        
-        if (p_v2 > 0) {
-            const finalConditionalPMF: MarginalPMF = new Map();
-            unnormalizedPMF.forEach((p_joint_sum, v1_value) => {
-                finalConditionalPMF.set(v1_value, p_joint_sum / p_v2);
-            });
-
-            const metrics = calculateMetricsFromPMF(finalConditionalPMF, v1);
-            const conditionResult: ConditionalResult = {
-                conditionalVariable: v1.name,
-                givenVariable: v2.name,
-                conditionValue: String(v2_value_str),
-                distribution: metrics.pmf,
-                mean: metrics.mean,
-                variance: metrics.variance
-            };
-
-            if (!finalResults[v2.name]) finalResults[v2.name] = [];
-            finalResults[v2.name].push(conditionResult);
-        }
-    });
     
-    return finalResults;
+    return jointPMF;
 };
 
+const klDivergence = (p: JointPMF, q: JointPMF): number => {
+    let divergence = 0;
+    const allKeys = new Set([...p.keys()]);
+    for (const key of allKeys) {
+        const pVal = p.get(key) || 0;
+        const qVal = q.get(key) || 0;
+        if (pVal > 1e-9 && qVal > 1e-9) {
+            divergence += pVal * Math.log2(pVal / qVal);
+        }
+    }
+    return divergence;
+};
 
-// --- MODEL FIT CALCULATIONS ---
-
-const calculateHellingerDistance = (p: JointPMF, q: JointPMF): number => {
-    const allKeys = new Set([...p.keys(), ...q.keys()]);
+const calculateHellingerDistance = (pmf1: JointPMF, pmf2: JointPMF): number => {
+    const allKeys = new Set([...pmf1.keys(), ...pmf2.keys()]);
     let sum = 0;
-    allKeys.forEach(key => sum += Math.pow(Math.sqrt(p.get(key) || 0) - Math.sqrt(q.get(key) || 0), 2));
+    for (const key of allKeys) {
+        const p1 = pmf1.get(key) || 0;
+        const p2 = pmf2.get(key) || 0;
+        sum += Math.pow(Math.sqrt(p1) - Math.sqrt(p2), 2);
+    }
     return Math.sqrt(sum) / Math.sqrt(2);
 };
 
-const calculateShannonEntropy = (dist: JointPMF): number => {
-    let entropy = 0;
-    dist.forEach(p_i => { if (p_i > 0) entropy -= p_i * Math.log2(p_i); });
-    return entropy;
-};
-
-const calculateJSDistance = (p: JointPMF, q: JointPMF): number => {
-    const m: JointPMF = new Map();
-    const allKeys = new Set([...p.keys(), ...q.keys()]);
-    allKeys.forEach(key => m.set(key, ((p.get(key) || 0) + (q.get(key) || 0)) / 2));
-    const jsdDivergence = calculateShannonEntropy(m) - (calculateShannonEntropy(p) + calculateShannonEntropy(q)) / 2;
-    return Math.sqrt(Math.max(0, jsdDivergence));
-};
-
-const calculateMSE = (dataVar: RandomVariable, modelPMF: JointPMF, varNames: string[]): number | undefined => {
-    if (dataVar.type !== VariableType.Numerical) return undefined;
-    const varIndex = varNames.indexOf(dataVar.name);
-    if (varIndex === -1) return undefined;
-    let modelMean = 0;
-    modelPMF.forEach((prob, key) => {
-        const numericVal = parseFloat(key.split(',')[varIndex]);
-        if (!isNaN(numericVal)) modelMean += numericVal * prob;
-    });
-    const dataPoints = dataVar.data.map(Number);
-    return dataPoints.map(p => Math.pow(p - modelMean, 2)).reduce((a, b) => a + b, 0) / dataPoints.length;
-};
-
-// --- MAIN ANALYSIS ORCHESTRATOR ---
-
-export const performFullAnalysis = (variables: RandomVariable[], theoreticalModels: TheoreticalModel[]): AnalysisResults => {
-    const results: AnalysisResults = { single_vars: {}, pairwise: [], modelFit: [], conditional: {}, empiricalJointPMF: new Map() };
-    const varNames = variables.map(v => v.name);
-    const validModels = theoreticalModels.filter(m => m.distribution.trim() !== '' && m.distribution.trim().split('\n').length >= 2);
-
-    // Parse models first to fail early
-    const parsedModels = new Map<string, { model: TheoreticalModel, pmf: JointPMF }>();
-    validModels.forEach(model => {
-        try {
-            parsedModels.set(model.id, { model, pmf: parseTheoreticalModel(model, varNames) });
-        } catch (e) {
-            results.modelFit.push({ modelName: model.name, error: e instanceof Error ? e.message : String(e) });
-        }
-    });
-
-    // Single variable analysis
-    variables.forEach(v => {
-        const empiricalPMF = calculatePMF(v.type === VariableType.Numerical ? v.data.map(Number) : v.data);
-        const singleResult: SingleVarResults = {
-            empirical: calculateMetricsFromPMF(empiricalPMF, v),
-            theoretical: {},
-        };
-
-        parsedModels.forEach(({ model, pmf }) => {
-            const theoreticalMarginalPMF = calculateMarginalPMF(pmf, varNames, v.name);
-            singleResult.theoretical[model.id] = calculateMetricsFromPMF(theoreticalMarginalPMF, v);
-        });
-        results.single_vars[v.id] = singleResult;
-    });
-    
-    const empiricalPMF = getEmpiricalJointPMF(variables);
-    results.empiricalJointPMF = empiricalPMF;
-
-    // Pairwise & Conditional analysis
-    if (variables.length > 1) {
-        // Pre-calculate model distance correlations
-        const modelDistanceCorrelations = new Map<string, { [pairKey: string]: number }>();
-        parsedModels.forEach(({ model, pmf }) => {
-            modelDistanceCorrelations.set(model.id, calculateDistanceCorrelationFromPMF(pmf, variables));
-        });
-
-        for (let i = 0; i < variables.length; i++) {
-            for (let j = i + 1; j < variables.length; j++) {
-                const v1 = variables[i];
-                const v2 = variables[j];
-                const pairKey = `${v1.id}-${v2.id}`;
-                const reversePairKey = `${v2.id}-${v1.id}`;
-                
-                // Pairwise Correlations
-                const pairwiseResult: PairwiseResult = { 
-                    var1_id: v1.id, 
-                    var1_name: v1.name, 
-                    var2_id: v2.id, 
-                    var2_name: v2.name,
-                    empirical: {},
-                    theoretical: {}
-                };
-                
-                // Empirical metrics
-                const empiricalMetrics: PairwiseMetrics = {};
-                if (v1.type === VariableType.Numerical && v2.type === VariableType.Numerical) {
-                    empiricalMetrics.pearsonCorrelation = calculatePearsonCorrelation(v1.data.map(Number), v2.data.map(Number));
-                }
-                empiricalMetrics.mutualInformation = calculateMutualInformation(v1.data, v2.data);
-                empiricalMetrics.distanceCorrelation = calculateDistanceCorrelation(v1.data, v1.type === VariableType.Numerical, v2.data, v2.type === VariableType.Numerical);
-                pairwiseResult.empirical = empiricalMetrics;
-                
-                // Theoretical metrics
-                parsedModels.forEach(({ model, pmf }) => {
-                    const theoreticalMetrics: PairwiseMetrics = {};
-                    theoreticalMetrics.mutualInformation = calculateMutualInformationFromPMF(pmf, varNames, v1.name, v2.name);
-                    theoreticalMetrics.pearsonCorrelation = calculatePearsonCorrelationFromPMF(pmf, varNames, v1, v2);
-                    theoreticalMetrics.distanceCorrelation = modelDistanceCorrelations.get(model.id)?.[pairKey] ?? modelDistanceCorrelations.get(model.id)?.[reversePairKey];
-                    pairwiseResult.theoretical[model.id] = theoreticalMetrics;
-                });
-
-                results.pairwise.push(pairwiseResult);
-
-                // Conditional Analysis
-                const conditional: PairwiseConditionalAnalysis = { empirical: {}, theoretical: {} };
-                conditional.empirical = {
-                    ...calculateConditionalAnalysisForPair(empiricalPMF, v1, v2, varNames),
-                    ...calculateConditionalAnalysisForPair(empiricalPMF, v2, v1, varNames)
-                };
-                parsedModels.forEach(({ model, pmf }) => {
-                     conditional.theoretical[model.id] = {
-                        ...calculateConditionalAnalysisForPair(pmf, v1, v2, varNames),
-                        ...calculateConditionalAnalysisForPair(pmf, v2, v1, varNames)
-                     };
-                });
-                results.conditional[pairKey] = conditional;
-            }
-        }
+const calculateJensenShannonDistance = (pmf1: JointPMF, pmf2: JointPMF): number => {
+    const m = new Map<string, number>();
+    const allKeys = new Set([...pmf1.keys(), ...pmf2.keys()]);
+    for(const key of allKeys) {
+        m.set(key, ((pmf1.get(key) || 0) + (pmf2.get(key) || 0)) / 2);
     }
-    
-    // Model Fit analysis
-    parsedModels.forEach(({ model, pmf }) => {
-        const fitResult: ModelFitResult = { modelName: model.name };
-        fitResult.hellingerDistance = calculateHellingerDistance(empiricalPMF, pmf);
-        fitResult.jensenShannonDistance = calculateJSDistance(empiricalPMF, pmf);
-        fitResult.mse = {};
-        variables.forEach(v => {
-            const mse = calculateMSE(v, pmf, varNames);
-            if (mse !== undefined && fitResult.mse) fitResult.mse[v.name] = mse;
-        });
-        results.modelFit.push(fitResult);
-    });
-
-    return results;
+    return Math.sqrt(0.5 * klDivergence(pmf1, m) + 0.5 * klDivergence(pmf2, m));
 };
 
-// --- EXPORT FUNCTIONS ---
 
-export const exportToJson = (results: AnalysisResults): string => JSON.stringify(results, null, 2);
+// --- EXPORTED API ---
+
+export const parseInput = (text: string): { name: string; data: string[] }[] => {
+    const lines = text.trim().split('\n').filter(line => line.trim() !== '');
+    if (lines.length < 2) return [];
+
+    const header = lines[0].split(',').map(h => h.trim());
+    const dataRows = lines.slice(1);
+
+    const variables: { name: string; data: string[] }[] = header.map(name => ({ name, data: [] }));
+
+    dataRows.forEach(row => {
+        const values = row.split(',').map(v => v.trim());
+        if (values.length === header.length) {
+            values.forEach((value, index) => {
+                if (variables[index]) variables[index].data.push(value);
+            });
+        }
+    });
+
+    return variables.filter(v => v.name);
+};
+
+
+export const detectVariableType = (data: string[]): VariableType => {
+    if (data.every(d => d === '' || !isNaN(Number(d)))) {
+        return VariableType.Numerical;
+    }
+    return VariableType.Nominal;
+};
+
+const replacer = (key: any, value: any) => {
+    if (value instanceof Map) return { dataType: 'Map', value: Array.from(value.entries()) };
+    return value;
+};
+
+export const exportToJson = (results: AnalysisResults): string => {
+    return JSON.stringify(results, replacer, 2);
+};
+
+const formatCsvValue = (val: any): string => {
+    if (val === undefined || val === null) return 'N/A';
+    if (Array.isArray(val)) return `"${val.join('; ')}"`;
+    const str = String(val);
+    if (str.includes(',')) return `"${str}"`;
+    return str;
+};
 
 export const exportToCsv = (results: AnalysisResults, variables: RandomVariable[]): string => {
     let csv = '';
+
+    // Single Variable Analysis
     csv += 'Single Variable Analysis\n';
-    csv += 'Variable Name,Type,Metric,Value\n';
-    variables.forEach(v => {
-        const res = results.single_vars[v.id].empirical;
-        const formatVal = (val: any) => val === undefined || val === null ? 'N/A' : val;
-        csv += `"${v.name}","${v.type}",Mean,${formatVal(res.mean?.toFixed(4))}\n`;
-        csv += `"${v.name}","${v.type}",Variance,${formatVal(res.variance?.toFixed(4))}\n`;
-        csv += `"${v.name}","${v.type}",Mode,${Array.isArray(res.mode) && res.mode.length > 0 ? `"${res.mode.join('; ')}"` : 'N/A'}\n`;
-        csv += `"${v.name}","${v.type}",Median,${formatVal(res.median)}\n`;
-    });
-    if(results.pairwise.length > 0) {
-        csv += '\nPairwise Dependence Analysis\n';
-        csv += 'Variable 1,Variable 2,Distance Correlation,Pearson Correlation,Mutual Information\n';
-        results.pairwise.forEach(p => {
-            csv += `"${p.var1_name}","${p.var2_name}",${p.empirical.distanceCorrelation?.toFixed(4) ?? 'N/A'},${p.empirical.pearsonCorrelation?.toFixed(4) ?? 'N/A'},${p.empirical.mutualInformation?.toFixed(4) ?? 'N/A'}\n`;
+    const firstVar = variables[0];
+    if (firstVar && results.single_vars[firstVar.id]) {
+        const modelNames = Object.keys(results.single_vars[firstVar.id].theoretical || {});
+        
+        variables.forEach(v => {
+            const res = results.single_vars[v.id];
+            if (!res) return;
+            csv += `\nVariable,"${v.name}"\n`;
+            csv += `Metric,Empirical,${modelNames.map(formatCsvValue).join(',')}\n`;
+            
+            const metrics: (keyof SingleVarMetrics)[] = ['mean', 'variance', 'median', 'mode'];
+            metrics.forEach(metric => {
+                const empiricalValue = res.empirical[metric];
+                if (empiricalValue !== undefined && (!Array.isArray(empiricalValue) || empiricalValue.length > 0)) {
+                    let row = `${metric},${formatCsvValue(empiricalValue)},`;
+                    row += modelNames.map(modelId => formatCsvValue(res.theoretical[modelId]?.[metric])).join(',') + '\n';
+                    csv += row;
+                }
+            });
+
+            csv += '\nPMF (Empirical)\nValue,Probability\n';
+            res.empirical.pmf.forEach(p => { csv += `${formatCsvValue(p.value)},${formatCsvValue(p.probability)}\n`; });
+
+            modelNames.forEach(modelId => {
+                csv += `\nPMF (${modelId})\nValue,Probability\n`;
+                (res.theoretical[modelId]?.pmf || []).forEach(p => { csv += `${formatCsvValue(p.value)},${formatCsvValue(p.probability)}\n`; });
+            });
         });
     }
+
+    // Pairwise Analysis
+    if (results.pairwise.length > 0) {
+        csv += '\nPairwise Dependence Analysis\n';
+        const firstPair = results.pairwise[0];
+        const modelNames = Object.keys(firstPair.theoretical);
+        csv += `Variable 1,Variable 2,Metric,Empirical,${modelNames.map(formatCsvValue).join(',')}\n`;
+
+        const pairwiseMetrics: (keyof PairwiseMetrics)[] = ['distanceCorrelation', 'pearsonCorrelation', 'mutualInformation'];
+        results.pairwise.forEach(pair => {
+            pairwiseMetrics.forEach(metric => {
+                if (pair.empirical[metric] !== undefined) {
+                    let row = `${pair.var1_name},${pair.var2_name},${metric},${formatCsvValue(pair.empirical[metric])},`;
+                    row += modelNames.map(modelId => formatCsvValue(pair.theoretical[modelId]?.[metric])).join(',') + '\n';
+                    csv += row;
+                }
+            });
+        });
+    }
+
+    // Model Fit
     if (results.modelFit.length > 0) {
         csv += '\nModel Fit Analysis\n';
-        csv += 'Model Name,Metric,Variable,Value\n';
-        results.modelFit.forEach(m => {
-            if (m.error) {
-                csv += `"${m.modelName}","Error","N/A","${m.error}"\n`;
+        csv += 'Model,Metric,Value\n';
+        results.modelFit.forEach(fit => {
+            if (fit.error) {
+                csv += `${formatCsvValue(fit.modelName)},error,${formatCsvValue(fit.error)}\n`;
             } else {
-                csv += `"${m.modelName}",Hellinger Distance,N/A,${m.hellingerDistance?.toFixed(4) ?? 'N/A'}\n`;
-                csv += `"${m.modelName}",Jensen-Shannon Distance,N/A,${m.jensenShannonDistance?.toFixed(4) ?? 'N/A'}\n`;
-                if (m.mse) {
-                    Object.entries(m.mse).forEach(([varName, value]) => {
-                         csv += `"${m.modelName}",Mean Squared Error,"${varName}",${value.toFixed(4)}\n`;
+                if (fit.hellingerDistance !== undefined) csv += `${formatCsvValue(fit.modelName)},Hellinger Distance,${formatCsvValue(fit.hellingerDistance)}\n`;
+                if (fit.jensenShannonDistance !== undefined) csv += `${formatCsvValue(fit.modelName)},Jensen-Shannon Distance,${formatCsvValue(fit.jensenShannonDistance)}\n`;
+                if (fit.mse) {
+                    Object.entries(fit.mse).forEach(([varName, mse]) => {
+                        csv += `${formatCsvValue(fit.modelName)},MSE (${varName}),${formatCsvValue(mse)}\n`;
                     });
                 }
             }
         });
     }
+
     return csv;
+};
+
+export const performFullAnalysis = (variables: RandomVariable[], theoreticalModels: TheoreticalModel[]): AnalysisResults => {
+    if (variables.length === 0 || variables[0]?.data.length === 0) {
+        throw new Error("Cannot perform analysis on empty dataset.");
+    }
+    
+    const numVars = variables.length;
+    const varMap = new Map(variables.map((v, i) => [v.id, { ...v, index: i }]));
+    const varNames = variables.map(v => v.name);
+
+    // --- EMPIRICAL ANALYSIS ---
+    const empiricalJointPMF = getEmpiricalJointPMF(variables);
+    const single_vars: { [variableId: string]: SingleVarResults } = {};
+    const empiricalMarginals: { [variableId: string]: JointPMF } = {};
+
+    variables.forEach((v, i) => {
+        const pmf = getMarginalPMF(empiricalJointPMF, [i], numVars);
+        empiricalMarginals[v.id] = pmf;
+        single_vars[v.id] = {
+            empirical: getSingleVarMetrics(pmf, v.type, v.ordinalOrder),
+            theoretical: {},
+        };
+    });
+
+    const pairwise: PairwiseResult[] = [];
+    const conditional: { [pairKey: string]: PairwiseConditionalAnalysis } = {};
+
+    for (let i = 0; i < numVars; i++) {
+        for (let j = i + 1; j < numVars; j++) {
+            const var1 = variables[i];
+            const var2 = variables[j];
+            
+            const jointPMF = getMarginalPMF(empiricalJointPMF, [i, j], numVars);
+            const marginal1 = empiricalMarginals[var1.id];
+            const marginal2 = empiricalMarginals[var2.id];
+
+            pairwise.push({
+                var1_id: var1.id, var1_name: var1.name, var2_id: var2.id, var2_name: var2.name,
+                empirical: {
+                    distanceCorrelation: calculateDistanceCorrelation(var1.data, var2.data),
+                    mutualInformation: calculateMutualInformation(jointPMF, marginal1, marginal2),
+                    pearsonCorrelation: (var1.type === VariableType.Numerical && var2.type === VariableType.Numerical) ? calculatePearsonCorrelation(var1.data, var2.data) : undefined,
+                },
+                theoretical: {},
+            });
+
+            const pairKey = [var1.id, var2.id].sort().join('-');
+            conditional[pairKey] = {
+                empirical: getConditionalDistributions(jointPMF, marginal1, marginal2, var1, var2),
+                theoretical: {}
+            };
+        }
+    }
+    
+    // --- THEORETICAL & MODEL FIT ANALYSIS ---
+    const modelFit: ModelFitResult[] = [];
+    theoreticalModels.forEach(model => {
+        const fitResult: ModelFitResult = { modelName: model.name };
+        const modelPMFOrError = parseTheoreticalModel(model, varNames);
+        if (typeof modelPMFOrError === 'string') {
+            fitResult.error = modelPMFOrError;
+            modelFit.push(fitResult);
+            return;
+        }
+        const modelJointPMF = modelPMFOrError;
+        
+        fitResult.hellingerDistance = calculateHellingerDistance(empiricalJointPMF, modelJointPMF);
+        fitResult.jensenShannonDistance = calculateJensenShannonDistance(empiricalJointPMF, modelJointPMF);
+        
+        // --- MSE CALCULATION ---
+        fitResult.mse = {};
+        
+        // Pre-calculate all single-var theoretical metrics
+        variables.forEach((v, i) => {
+            const modelMarginal = getMarginalPMF(modelJointPMF, [i], numVars);
+            single_vars[v.id].theoretical[model.id] = getSingleVarMetrics(modelMarginal, v.type, v.ordinalOrder);
+        });
+
+        const numericalVars = variables.filter(v => v.type === VariableType.Numerical);
+        const categoricalVars = variables.filter(v => v.type === VariableType.Nominal || v.type === VariableType.Ordinal);
+
+        if (numericalVars.length > 0 && categoricalVars.length > 0) {
+            // CONDITIONAL MSE: E.g., MSE(Numerical | Categorical=value)
+            numericalVars.forEach(numVar => {
+                categoricalVars.forEach(catVar => {
+                    const numVarIndex = variables.findIndex(v => v.id === numVar.id);
+                    const catVarIndex = variables.findIndex(v => v.id === catVar.id);
+                    
+                    const modelPairPMF = getMarginalPMF(modelJointPMF, [numVarIndex, catVarIndex], numVars);
+                    const modelMarginalNum = getMarginalPMF(modelJointPMF, [numVarIndex], numVars);
+                    const modelMarginalCat = getMarginalPMF(modelJointPMF, [catVarIndex], numVars);
+                    
+                    const modelConditionalDists = getConditionalDistributions(modelPairPMF, modelMarginalNum, modelMarginalCat, numVar, catVar);
+                    
+                    const conditionalMeansByCatValue = new Map<string, number>();
+                    const resultsForNumGivenCat = modelConditionalDists[catVar.name];
+
+                    if (resultsForNumGivenCat) {
+                        resultsForNumGivenCat.forEach(condResult => {
+                            if (condResult.conditionalVariable === numVar.name && condResult.mean !== undefined) {
+                                conditionalMeansByCatValue.set(condResult.conditionValue, condResult.mean);
+                            }
+                        });
+                    }
+                    
+                    const uniqueCategories = [...new Set(catVar.data)];
+                    uniqueCategories.forEach(catValue => {
+                        const modelConditionalMean = conditionalMeansByCatValue.get(catValue);
+                        if (modelConditionalMean === undefined) return;
+                        
+                        let sumSqErr = 0;
+                        let count = 0;
+                        for (let i = 0; i < numVar.data.length; i++) {
+                            if (catVar.data[i] === catValue) {
+                                sumSqErr += Math.pow(Number(numVar.data[i]) - modelConditionalMean, 2);
+                                count++;
+                            }
+                        }
+                        
+                        if (count > 0) {
+                            const mse = sumSqErr / count;
+                            const key = `MSE: ${numVar.name} | ${catVar.name}=${catValue}`;
+                            fitResult.mse![key] = mse;
+                        }
+                    });
+                });
+            });
+        } else if (numericalVars.length > 0) {
+            // SIMPLE MSE: For numerical-only datasets
+            numericalVars.forEach(numVar => {
+                const modelMean = single_vars[numVar.id]?.theoretical[model.id]?.mean;
+                
+                if (modelMean !== undefined) {
+                    const data = numVar.data.map(Number);
+                    const sumSqErr = data.reduce((acc, val) => acc + Math.pow(val - modelMean, 2), 0);
+                    const mse = sumSqErr / data.length;
+                    fitResult.mse![`MSE: ${numVar.name}`] = mse;
+                }
+            });
+        }
+
+        // --- THEORETICAL PAIRWISE ---
+        pairwise.forEach(pair => {
+            const v1 = varMap.get(pair.var1_id)!;
+            const v2 = varMap.get(pair.var2_id)!;
+            const modelPairPMF = getMarginalPMF(modelJointPMF, [v1.index, v2.index], numVars);
+            const modelMarginal1 = getMarginalPMF(modelJointPMF, [v1.index], numVars);
+            const modelMarginal2 = getMarginalPMF(modelJointPMF, [v2.index], numVars);
+            
+            pair.theoretical[model.id] = {
+                 mutualInformation: calculateMutualInformation(modelPairPMF, modelMarginal1, modelMarginal2),
+            };
+
+            const pairKey = [v1.id, v2.id].sort().join('-');
+            if (conditional[pairKey]) {
+                conditional[pairKey].theoretical[model.id] = getConditionalDistributions(modelPairPMF, modelMarginal1, modelMarginal2, v1, v2);
+            }
+        });
+
+        modelFit.push(fitResult);
+    });
+
+    return { single_vars, pairwise, modelFit, conditional, empiricalJointPMF };
 };

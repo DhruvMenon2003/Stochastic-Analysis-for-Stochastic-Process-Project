@@ -11,6 +11,14 @@ interface SingleVariableAnalysisProps {
 
 const formatNumber = (num?: number) => num !== undefined && num !== null ? num.toFixed(4) : 'N/A';
 
+// FIX: A robust function to render metric values of different types (number, string, array).
+const renderMetricValue = (value: any): string => {
+    if (value === undefined || value === null) return 'N/A';
+    if (Array.isArray(value)) return value.join(', ');
+    if (typeof value === 'number') return formatNumber(value);
+    return String(value); // Handles string-based values like median for ordinal types
+};
+
 const CustomTooltip: React.FC<any> = ({ active, payload, label }) => {
     if (active && payload && payload.length) {
         return (
@@ -99,10 +107,10 @@ const SingleVariableAnalysis: React.FC<SingleVariableAnalysisProps> = ({ variabl
                                 return (
                                     <tr key={metricName} className="border-b border-gray-200 dark:border-gray-700 last:border-0">
                                         <td className="py-2 font-medium">{metricName}</td>
-                                        <td className="py-2 font-mono">{Array.isArray(empiricalValue) ? empiricalValue.join(', ') : formatNumber(empiricalValue as number)}</td>
+                                        <td className="py-2 font-mono">{renderMetricValue(empiricalValue)}</td>
                                         {models.filter(m => results.theoretical[m.id]).map(m => {
                                             const modelValue = results.theoretical[m.id]?.[key];
-                                            return <td key={m.id} className="py-2 font-mono">{modelValue !== undefined ? (Array.isArray(modelValue) ? modelValue.join(', ') : formatNumber(modelValue as number)) : 'N/A'}</td>
+                                            return <td key={m.id} className="py-2 font-mono">{renderMetricValue(modelValue)}</td>
                                         })}
                                     </tr>
                                 );
