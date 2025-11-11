@@ -1,0 +1,5 @@
+{
+  "name": "Stochastic Analysis Engine",
+  "description": "An advanced tool for statistical analysis of random variables. It calculates probability distributions, key metrics like mean, median, and mode, and evaluates stochastic dependence between variables using Pearson Correlation, Distance Correlation, and Mutual Information.",
+  "requestFramePermissions": []
+}
