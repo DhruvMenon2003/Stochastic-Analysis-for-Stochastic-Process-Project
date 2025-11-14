@@ -81,7 +81,7 @@ const pmfToDistribution = (pmf: JointPMF, type: VariableType, ordinalOrder: stri
         dist.sort((a, b) => ordinalOrder.indexOf(String(a.value)) - ordinalOrder.indexOf(String(b.value)));
     } else {
         // Sort by value for consistency if not numerical or ordered ordinal
-        dist.sort((a, b) => String(a.value).localeCompare(String(b.value)));
+        dist.sort((a, b) => String(a.value).localeCompare(String(a.value)));
     }
     
     let cumulative = 0;
@@ -564,33 +564,44 @@ export const performFullAnalysis = (variables: RandomVariable[], theoreticalMode
         fitResult.jensenShannonDistance = calculateJensenShannonDistance(empiricalJointPMF, modelJointPMF);
         
         // --- MSE CALCULATION ---
+        // This section calculates the Mean Squared Error (MSE) to evaluate how well the theoretical model's
+        // predictions for numerical variables match the empirical data.
+        // The calculation strategy depends on whether categorical variables are present.
         fitResult.mse = {};
         
-        // Pre-calculate all single-var theoretical metrics
+        // Pre-calculate all single-var theoretical metrics from the model for later use.
         variables.forEach((v, i) => {
             const modelMarginal = getMarginalPMF(modelJointPMF, [i], numVars);
             single_vars[v.id].theoretical[model.id] = getSingleVarMetrics(modelMarginal, v.type, v.ordinalOrder);
         });
 
+        // Separate variables into numerical and categorical for targeted MSE calculations.
         const numericalVars = variables.filter(v => v.type === VariableType.Numerical);
         const categoricalVars = variables.filter(v => v.type === VariableType.Nominal || v.type === VariableType.Ordinal);
 
+        // Case 1: The dataset contains both numerical and categorical variables.
+        // We calculate a conditional MSE for each numerical variable, conditioned on each categorical variable.
+        // This evaluates the model's ability to predict the numerical value given a category.
         if (numericalVars.length > 0 && categoricalVars.length > 0) {
-            // CONDITIONAL MSE: E.g., MSE(Numerical | Categorical=value)
+            
+            // Iterate through every possible pair of (numerical variable, categorical variable).
             numericalVars.forEach(numVar => {
                 categoricalVars.forEach(catVar => {
                     const numVarIndex = variables.findIndex(v => v.id === numVar.id);
                     const catVarIndex = variables.findIndex(v => v.id === catVar.id);
                     
+                    // To find the conditional mean E[Numerical | Categorical], we first need the model's joint distribution for this pair.
                     const modelPairPMF = getMarginalPMF(modelJointPMF, [numVarIndex, catVarIndex], numVars);
                     const modelMarginalNum = getMarginalPMF(modelJointPMF, [numVarIndex], numVars);
                     const modelMarginalCat = getMarginalPMF(modelJointPMF, [catVarIndex], numVars);
                     
+                    // From the model's distributions, calculate all conditional distributions, including E[Numerical | Categorical=c] for each category c.
                     const modelConditionalDists = getConditionalDistributions(modelPairPMF, modelMarginalNum, modelMarginalCat, numVar, catVar);
                     
+                    // Store the calculated conditional means from the model in a map for easy lookup.
+                    // The key is the category value (e.g., 'high', 'red'), and the value is the expected mean of the numerical variable for that category.
                     const conditionalMeansByCatValue = new Map<string, number>();
                     const resultsForNumGivenCat = modelConditionalDists[catVar.name];
-
                     if (resultsForNumGivenCat) {
                         resultsForNumGivenCat.forEach(condResult => {
                             if (condResult.conditionalVariable === numVar.name && condResult.mean !== undefined) {
@@ -599,36 +610,68 @@ export const performFullAnalysis = (variables: RandomVariable[], theoreticalMode
                         });
                     }
                     
+                    // Get all unique categories observed in the empirical data for the categorical variable.
                     const uniqueCategories = [...new Set(catVar.data)];
+                    let cumulativeMse = 0;
+                    // We need the empirical marginal probabilities of the categorical variable to weight the per-category MSEs.
+                    const empiricalCatMarginal = empiricalMarginals[catVar.id];
+
+                    // Now, for each unique category, calculate its specific MSE.
                     uniqueCategories.forEach(catValue => {
+                        // Get the model's predicted mean for this specific category.
                         const modelConditionalMean = conditionalMeansByCatValue.get(catValue);
-                        if (modelConditionalMean === undefined) return;
+                        if (modelConditionalMean === undefined) return; // Skip if the model doesn't predict for this category.
                         
                         let sumSqErr = 0;
                         let count = 0;
+                        // Iterate through the entire dataset to find matching observations.
                         for (let i = 0; i < numVar.data.length; i++) {
+                            // Filter the data: only consider rows where the categorical variable matches the current category value.
                             if (catVar.data[i] === catValue) {
+                                // For this subset of data, calculate the squared error against the model's conditional mean.
                                 sumSqErr += Math.pow(Number(numVar.data[i]) - modelConditionalMean, 2);
                                 count++;
                             }
                         }
                         
+                        // If we found any data for this category, calculate the MSE for this group.
                         if (count > 0) {
+                            // The MSE for this category is the average of the squared errors.
+                            // MSE(Numerical | Categorical=c) = (1/N_c) * Σ( (y_i - E[Y|X=c])^2 )
                             const mse = sumSqErr / count;
                             const key = `MSE: ${numVar.name} | ${catVar.name}=${catValue}`;
                             fitResult.mse![key] = mse;
+
+                            // To calculate the cumulative MSE, we weight this category's MSE by its empirical probability.
+                            const weight = empiricalCatMarginal.get(catValue); // P(Categorical=c) from data.
+                            if (weight !== undefined) {
+                                // cumulativeMse = Σ [ P(Categorical=c) * MSE(Numerical | Categorical=c) ]
+                                cumulativeMse += mse * weight;
+                            }
                         }
                     });
+
+                    // If a cumulative MSE was calculated, add it to the results.
+                    if (cumulativeMse > 0) {
+                         const cumulativeKey = `Cumulative MSE (${numVar.name} | ${catVar.name})`;
+                         fitResult.mse![cumulativeKey] = cumulativeMse;
+                    }
                 });
             });
-        } else if (numericalVars.length > 0) {
-            // SIMPLE MSE: For numerical-only datasets
+        } 
+        // Case 2: The dataset only contains numerical variables (or no categorical ones).
+        // The calculation is simpler: we compare the empirical data against the model's overall theoretical mean for each variable.
+        else if (numericalVars.length > 0) {
             numericalVars.forEach(numVar => {
+                // Get the theoretical mean for the numerical variable from the pre-calculated model metrics.
                 const modelMean = single_vars[numVar.id]?.theoretical[model.id]?.mean;
                 
                 if (modelMean !== undefined) {
                     const data = numVar.data.map(Number);
+                    // Calculate the sum of squared errors between each data point and the model's mean.
                     const sumSqErr = data.reduce((acc, val) => acc + Math.pow(val - modelMean, 2), 0);
+                    // The MSE is the average of the squared errors.
+                    // MSE = (1/N) * Σ( (y_i - E[Y])^2 )
                     const mse = sumSqErr / data.length;
                     fitResult.mse![`MSE: ${numVar.name}`] = mse;
                 }

@@ -1,4 +1,5 @@
 
+
 import React, { useState, useMemo, useRef } from 'react';
 import { type RandomVariable, type AnalysisResults, VariableType, type TheoreticalModel } from './types';
 import { parseInput, performFullAnalysis, detectVariableType, exportToJson, exportToCsv } from './services/analysisService';
@@ -51,14 +52,19 @@ const App: React.FC = () => {
             return true;
         }
         return theoreticalModels.every(model => {
-             const sum = Object.values(model.jointProbabilities).reduce((acc, probStr) => {
+            // Fix: Explicitly typing reducer arguments resolves TypeScript inference issues where the accumulator `acc` was considered `unknown`.
+             const sum = Object.values(model.jointProbabilities).reduce((acc: number, probStr: string) => {
                 const prob = parseFloat(probStr);
                 return isNaN(prob) ? acc : acc + prob;
             }, 0);
              // Check if all probabilities are filled
              const stateSpaces = variables.map(v => model.stateSpaces[v.name]?.split(',').map(s => s.trim()).filter(Boolean) ?? []);
              if (stateSpaces.some(s => s.length === 0)) return true; // Don't validate if spaces are not defined
-             const expectedProbs = stateSpaces.reduce((acc, curr) => acc * (curr.length || 1), 1);
+             // Fix: The original code with explicit types was correct. Rewriting the reducer with a body to be more verbose,
+             // which can help avoid potential TypeScript parser/type-checker issues.
+             const expectedProbs = stateSpaces.reduce((acc: number, curr: string[]) => {
+                return acc * (curr.length || 1);
+             }, 1);
              if (Object.keys(model.jointProbabilities).length !== expectedProbs) return true; // Don't validate if not fully populated
 
             return Math.abs(sum - 1.0) < 1e-5;
@@ -145,7 +151,9 @@ const App: React.FC = () => {
 
         const uploadPromises: Promise<{ name: string; content: string } | { error: string }>[] = [];
 
-        Array.from(files).forEach(file => {
+        // FIX: Multiple errors about property 'name' not existing on 'unknown'.
+        // By explicitly typing `file` as `File`, we ensure correct type inference downstream.
+        Array.from(files).forEach((file: File) => {
             if (storedDatasets.some(d => d.name === file.name)) {
                 uploadPromises.push(Promise.resolve({ error: `Dataset "${file.name}" already exists.` }));
                 return;

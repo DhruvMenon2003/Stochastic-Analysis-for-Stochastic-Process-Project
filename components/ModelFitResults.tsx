@@ -23,10 +23,23 @@ const ModelFitTable: React.FC<ModelFitResultsProps> = ({ modelFitResults }) => {
             if (model.hellingerDistance !== undefined) metrics.add('Hellinger Distance');
             if (model.jensenShannonDistance !== undefined) metrics.add('Jensen-Shannon Distance');
             if (model.mse) {
-                Object.keys(model.mse).forEach(varName => metrics.add(`MSE: ${varName}`));
+                Object.keys(model.mse).forEach(key => metrics.add(key));
             }
         });
-        const metricList = Array.from(metrics);
+
+        // Sort metrics for consistent display order
+        const metricList = Array.from(metrics).sort((a, b) => {
+            const getRank = (m: string) => {
+                if (m.includes('Distance')) return 0;
+                if (m.startsWith('Cumulative')) return 1;
+                if (m.startsWith('MSE:')) return 2;
+                return 3;
+            };
+            const rankA = getRank(a);
+            const rankB = getRank(b);
+            if (rankA !== rankB) return rankA - rankB;
+            return a.localeCompare(b);
+        });
 
         // Find the winner for each metric
         const winnersByMetric: { [metric: string]: string } = {};
@@ -37,9 +50,8 @@ const ModelFitTable: React.FC<ModelFitResultsProps> = ({ modelFitResults }) => {
                 let currentScore: number | undefined;
                 if (metric === 'Hellinger Distance') currentScore = model.hellingerDistance;
                 else if (metric === 'Jensen-Shannon Distance') currentScore = model.jensenShannonDistance;
-                else if (metric.startsWith('MSE: ') && model.mse) {
-                    const varName = metric.replace('MSE: ', '');
-                    currentScore = model.mse[varName];
+                else if (model.mse && model.mse[metric] !== undefined) {
+                    currentScore = model.mse[metric];
                 }
 
                 if (currentScore !== undefined && currentScore < bestScore) {
@@ -112,9 +124,8 @@ const ModelFitTable: React.FC<ModelFitResultsProps> = ({ modelFitResults }) => {
                                     let value: number | undefined;
                                     if (metric === 'Hellinger Distance') value = result?.hellingerDistance;
                                     else if (metric === 'Jensen-Shannon Distance') value = result?.jensenShannonDistance;
-                                    else if (metric.startsWith('MSE: ') && result?.mse) {
-                                       const varName = metric.replace('MSE: ', '');
-                                       value = result.mse[varName];
+                                    else if (result?.mse) {
+                                       value = result.mse[metric];
                                     }
                                     const isWinner = winnersByMetric[metric] === name;
 
