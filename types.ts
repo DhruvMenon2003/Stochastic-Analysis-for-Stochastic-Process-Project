@@ -69,6 +69,7 @@ export interface AnalysisResults {
     modelFit: ModelFitResult[];
     conditional: { [pairKey: string]: PairwiseConditionalAnalysis };
     empiricalJointPMF: JointPMF;
+    variables: RandomVariable[];
 }
 
 export interface TheoreticalModel {
@@ -85,4 +86,35 @@ export interface ModelFitResult {
     jensenShannonDistance?: number;
     mse?: { [variableName: string]: number };
     error?: string;
+}
+
+// --- NEW TYPES FOR TIME SERIES ANALYSIS ---
+
+export type TPM = Map<string, Map<string, number>>; // from_state -> to_state -> probability
+
+export interface HellingerResult {
+    pair: string;
+    distance: number;
+}
+
+export interface TimeSeriesAnalysisResults {
+    isHomogeneous: boolean;
+    homogeneityMetrics: {
+        hellingerDistances: HellingerResult[];
+        gjsDivergence: number;
+    };
+    isMarkovian: boolean;
+    markovianMetrics: {
+        hellingerDistances: HellingerResult[];
+        gjsDivergence: number;
+    };
+    tpms_firstOrder: { tpm: TPM; label: string }[];
+    tpm_fullHistory: { tpm: TPM; label: string };
+    average_tpm_firstOrder: { tpm: TPM; label: string };
+    weakStationarity: {
+        mean: number[];
+        variance: number[];
+        timeLabels: string[];
+    };
+    stateSpace: string[];
 }

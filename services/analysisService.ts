@@ -12,6 +12,9 @@ import {
     type PairwiseConditionalAnalysis,
     type ConditionalResult,
     type PairwiseMetrics,
+    type TimeSeriesAnalysisResults,
+    type TPM,
+    type HellingerResult
 } from '../types';
 
 // --- UTILITY FUNCTIONS ---
@@ -495,14 +498,25 @@ export const exportToCsv = (results: AnalysisResults, variables: RandomVariable[
     return csv;
 };
 
-export const performFullAnalysis = (variables: RandomVariable[], theoreticalModels: TheoreticalModel[]): AnalysisResults => {
+export const performFullAnalysis = (inputText: string): AnalysisResults => {
+    const parsedData = parseInput(inputText);
+    if (parsedData.length === 0 || parsedData[0].data.length === 0) {
+        throw new Error("No data found. Please ensure the input has a header and data rows.");
+    }
+     const variables: RandomVariable[] = parsedData.map((v, i) => ({
+        id: `var-${i}-${Date.now()}`,
+        name: v.name,
+        data: v.data,
+        type: detectVariableType(v.data),
+        ordinalOrder: [],
+    }));
+
     if (variables.length === 0 || variables[0]?.data.length === 0) {
         throw new Error("Cannot perform analysis on empty dataset.");
     }
     
     const numVars = variables.length;
     const varMap = new Map(variables.map((v, i) => [v.id, { ...v, index: i }]));
-    const varNames = variables.map(v => v.name);
 
     // --- EMPIRICAL ANALYSIS ---
     const empiricalJointPMF = getEmpiricalJointPMF(variables);
@@ -548,156 +562,289 @@ export const performFullAnalysis = (variables: RandomVariable[], theoreticalMode
         }
     }
     
-    // --- THEORETICAL & MODEL FIT ANALYSIS ---
+    // --- THEORETICAL & MODEL FIT ANALYSIS (Placeholder, as models are UI-driven) ---
     const modelFit: ModelFitResult[] = [];
-    theoreticalModels.forEach(model => {
-        const fitResult: ModelFitResult = { modelName: model.name };
-        const modelPMFOrError = parseTheoreticalModel(model, varNames);
-        if (typeof modelPMFOrError === 'string') {
-            fitResult.error = modelPMFOrError;
-            modelFit.push(fitResult);
-            return;
+    
+    return { variables, single_vars, pairwise, modelFit, conditional, empiricalJointPMF };
+};
+
+
+// --- TIME SERIES ANALYSIS ---
+
+/**
+ * Checks if the input data format matches the time-series criteria.
+ * Criteria: First column is 'Time', subsequent columns are 'Instance1', 'Instance2', etc. (case-insensitive).
+ */
+export const detectAnalysisType = (text: string): 'time-series' | 'cross-sectional' => {
+    const lines = text.trim().split('\n');
+    if (lines.length < 2) return 'cross-sectional';
+
+    const header = lines[0].split(',').map(h => h.trim().toLowerCase());
+    if (header.length < 2) return 'cross-sectional';
+
+    if (header[0] !== 'time') return 'cross-sectional';
+
+    for (let i = 1; i < header.length; i++) {
+        if (header[i] !== `instance${i}`) {
+            return 'cross-sectional';
         }
-        const modelJointPMF = modelPMFOrError;
-        
-        fitResult.hellingerDistance = calculateHellingerDistance(empiricalJointPMF, modelJointPMF);
-        fitResult.jensenShannonDistance = calculateJensenShannonDistance(empiricalJointPMF, modelJointPMF);
-        
-        // --- MSE CALCULATION ---
-        // This section calculates the Mean Squared Error (MSE) to evaluate how well the theoretical model's
-        // predictions for numerical variables match the empirical data.
-        // The calculation strategy depends on whether categorical variables are present.
-        fitResult.mse = {};
-        
-        // Pre-calculate all single-var theoretical metrics from the model for later use.
-        variables.forEach((v, i) => {
-            const modelMarginal = getMarginalPMF(modelJointPMF, [i], numVars);
-            single_vars[v.id].theoretical[model.id] = getSingleVarMetrics(modelMarginal, v.type, v.ordinalOrder);
-        });
+    }
 
-        // Separate variables into numerical and categorical for targeted MSE calculations.
-        const numericalVars = variables.filter(v => v.type === VariableType.Numerical);
-        const categoricalVars = variables.filter(v => v.type === VariableType.Nominal || v.type === VariableType.Ordinal);
+    return 'time-series';
+};
 
-        // Case 1: The dataset contains both numerical and categorical variables.
-        // We calculate a conditional MSE for each numerical variable, conditioned on each categorical variable.
-        // This evaluates the model's ability to predict the numerical value given a category.
-        if (numericalVars.length > 0 && categoricalVars.length > 0) {
-            
-            // Iterate through every possible pair of (numerical variable, categorical variable).
-            numericalVars.forEach(numVar => {
-                categoricalVars.forEach(catVar => {
-                    const numVarIndex = variables.findIndex(v => v.id === numVar.id);
-                    const catVarIndex = variables.findIndex(v => v.id === catVar.id);
-                    
-                    // To find the conditional mean E[Numerical | Categorical], we first need the model's joint distribution for this pair.
-                    const modelPairPMF = getMarginalPMF(modelJointPMF, [numVarIndex, catVarIndex], numVars);
-                    const modelMarginalNum = getMarginalPMF(modelJointPMF, [numVarIndex], numVars);
-                    const modelMarginalCat = getMarginalPMF(modelJointPMF, [catVarIndex], numVars);
-                    
-                    // From the model's distributions, calculate all conditional distributions, including E[Numerical | Categorical=c] for each category c.
-                    const modelConditionalDists = getConditionalDistributions(modelPairPMF, modelMarginalNum, modelMarginalCat, numVar, catVar);
-                    
-                    // Store the calculated conditional means from the model in a map for easy lookup.
-                    // The key is the category value (e.g., 'high', 'red'), and the value is the expected mean of the numerical variable for that category.
-                    const conditionalMeansByCatValue = new Map<string, number>();
-                    const resultsForNumGivenCat = modelConditionalDists[catVar.name];
-                    if (resultsForNumGivenCat) {
-                        resultsForNumGivenCat.forEach(condResult => {
-                            if (condResult.conditionalVariable === numVar.name && condResult.mean !== undefined) {
-                                conditionalMeansByCatValue.set(condResult.conditionValue, condResult.mean);
-                            }
-                        });
-                    }
-                    
-                    // Get all unique categories observed in the empirical data for the categorical variable.
-                    const uniqueCategories = [...new Set(catVar.data)];
-                    let cumulativeMse = 0;
-                    // We need the empirical marginal probabilities of the categorical variable to weight the per-category MSEs.
-                    const empiricalCatMarginal = empiricalMarginals[catVar.id];
+const calculateTPM = (
+    timeLabels: string[],
+    instanceData: string[][],
+    stateSpace: string[],
+    timeIndex: number, // The index of the 'to' state
+    order: number
+): TPM => {
+    const tpm: TPM = new Map();
+    const fromStateCounts: Map<string, number> = new Map();
+    const jointCounts: Map<string, Map<string, number>> = new Map();
 
-                    // Now, for each unique category, calculate its specific MSE.
-                    uniqueCategories.forEach(catValue => {
-                        // Get the model's predicted mean for this specific category.
-                        const modelConditionalMean = conditionalMeansByCatValue.get(catValue);
-                        if (modelConditionalMean === undefined) return; // Skip if the model doesn't predict for this category.
-                        
-                        let sumSqErr = 0;
-                        let count = 0;
-                        // Iterate through the entire dataset to find matching observations.
-                        for (let i = 0; i < numVar.data.length; i++) {
-                            // Filter the data: only consider rows where the categorical variable matches the current category value.
-                            if (catVar.data[i] === catValue) {
-                                // For this subset of data, calculate the squared error against the model's conditional mean.
-                                sumSqErr += Math.pow(Number(numVar.data[i]) - modelConditionalMean, 2);
-                                count++;
-                            }
-                        }
-                        
-                        // If we found any data for this category, calculate the MSE for this group.
-                        if (count > 0) {
-                            // The MSE for this category is the average of the squared errors.
-                            // MSE(Numerical | Categorical=c) = (1/N_c) * Σ( (y_i - E[Y|X=c])^2 )
-                            const mse = sumSqErr / count;
-                            const key = `MSE: ${numVar.name} | ${catVar.name}=${catValue}`;
-                            fitResult.mse![key] = mse;
+    const numInstances = instanceData.length;
+    const numTimeSteps = timeLabels.length;
+    
+    if (timeIndex < order) return tpm; // Not enough history
 
-                            // To calculate the cumulative MSE, we weight this category's MSE by its empirical probability.
-                            const weight = empiricalCatMarginal.get(catValue); // P(Categorical=c) from data.
-                            if (weight !== undefined) {
-                                // cumulativeMse = Σ [ P(Categorical=c) * MSE(Numerical | Categorical=c) ]
-                                cumulativeMse += mse * weight;
-                            }
-                        }
-                    });
-
-                    // If a cumulative MSE was calculated, add it to the results.
-                    if (cumulativeMse > 0) {
-                         const cumulativeKey = `Cumulative MSE (${numVar.name} | ${catVar.name})`;
-                         fitResult.mse![cumulativeKey] = cumulativeMse;
-                    }
-                });
-            });
-        } 
-        // Case 2: The dataset only contains numerical variables (or no categorical ones).
-        // The calculation is simpler: we compare the empirical data against the model's overall theoretical mean for each variable.
-        else if (numericalVars.length > 0) {
-            numericalVars.forEach(numVar => {
-                // Get the theoretical mean for the numerical variable from the pre-calculated model metrics.
-                const modelMean = single_vars[numVar.id]?.theoretical[model.id]?.mean;
-                
-                if (modelMean !== undefined) {
-                    const data = numVar.data.map(Number);
-                    // Calculate the sum of squared errors between each data point and the model's mean.
-                    const sumSqErr = data.reduce((acc, val) => acc + Math.pow(val - modelMean, 2), 0);
-                    // The MSE is the average of the squared errors.
-                    // MSE = (1/N) * Σ( (y_i - E[Y])^2 )
-                    const mse = sumSqErr / data.length;
-                    fitResult.mse![`MSE: ${numVar.name}`] = mse;
-                }
-            });
+    for (let i = 0; i < numInstances; i++) {
+        const fromStateParts: string[] = [];
+        for (let j = order; j > 0; j--) {
+            fromStateParts.push(instanceData[i][timeIndex - j]);
         }
+        const fromState = fromStateParts.join(',');
+        const toState = instanceData[i][timeIndex];
 
-        // --- THEORETICAL PAIRWISE ---
-        pairwise.forEach(pair => {
-            const v1 = varMap.get(pair.var1_id)!;
-            const v2 = varMap.get(pair.var2_id)!;
-            const modelPairPMF = getMarginalPMF(modelJointPMF, [v1.index, v2.index], numVars);
-            const modelMarginal1 = getMarginalPMF(modelJointPMF, [v1.index], numVars);
-            const modelMarginal2 = getMarginalPMF(modelJointPMF, [v2.index], numVars);
-            
-            pair.theoretical[model.id] = {
-                 mutualInformation: calculateMutualInformation(modelPairPMF, modelMarginal1, modelMarginal2),
-            };
-
-            const pairKey = [v1.id, v2.id].sort().join('-');
-            if (conditional[pairKey]) {
-                conditional[pairKey].theoretical[model.id] = getConditionalDistributions(modelPairPMF, modelMarginal1, modelMarginal2, v1, v2);
+        // Increment counts
+        fromStateCounts.set(fromState, (fromStateCounts.get(fromState) || 0) + 1);
+        if (!jointCounts.has(fromState)) {
+            jointCounts.set(fromState, new Map());
+        }
+        const toCounts = jointCounts.get(fromState)!;
+        toCounts.set(toState, (toCounts.get(toState) || 0) + 1);
+    }
+    
+    // Calculate probabilities
+    for (const [fromState, totalCount] of fromStateCounts.entries()) {
+        if (totalCount > 0) {
+            const toDist = new Map<string, number>();
+            const toCounts = jointCounts.get(fromState)!;
+            for (const toState of stateSpace) {
+                const prob = (toCounts.get(toState) || 0) / totalCount;
+                toDist.set(toState, prob);
             }
-        });
+            tpm.set(fromState, toDist);
+        }
+    }
+    return tpm;
+};
 
-        modelFit.push(fitResult);
+const calculateHellingerDistanceTPM = (tpm1: TPM, tpm2: TPM): number => {
+    const fromStates = new Set([...tpm1.keys(), ...tpm2.keys()]);
+    if (fromStates.size === 0) return 0;
+    
+    let totalSquaredHellinger = 0;
+    
+    for (const fromState of fromStates) {
+        const dist1 = tpm1.get(fromState);
+        const dist2 = tpm2.get(fromState);
+        
+        const toStates = new Set([...(dist1?.keys() || []), ...(dist2?.keys() || [])]);
+        let sum = 0;
+        
+        for (const toState of toStates) {
+            const p1 = dist1?.get(toState) || 0;
+            const p2 = dist2?.get(toState) || 0;
+            sum += Math.pow(Math.sqrt(p1) - Math.sqrt(p2), 2);
+        }
+        
+        const h_dist_squared = sum / 2;
+        totalSquaredHellinger += h_dist_squared;
+    }
+    
+    // Assumes uniform probability over from_states for weighting.
+    return Math.sqrt(totalSquaredHellinger / fromStates.size);
+};
+
+const calculateEntropy = (dist: Map<string, number>, base: number): number => {
+    let entropy = 0;
+    for (const prob of dist.values()) {
+        if (prob > 1e-9) {
+            entropy -= prob * (Math.log(prob) / Math.log(base));
+        }
+    }
+    return entropy;
+};
+
+const calculateTPMEntropy = (tpm: TPM, base: number): number => {
+    if (tpm.size === 0) return 0;
+    let totalEntropy = 0;
+    for (const fromState of tpm.keys()) {
+        const dist = tpm.get(fromState)!;
+        totalEntropy += calculateEntropy(dist, base);
+    }
+    // Average entropy across all from_states (assumes uniform stationary dist).
+    return totalEntropy / tpm.size;
+};
+
+const calculateGJS_TPM = (tpms: TPM[]): number => {
+    if (tpms.length < 2) return 0;
+    const base = tpms.length;
+
+    // 1. Calculate weighted average of TPMs
+    const avgTpm: TPM = new Map();
+    const allFromStates = new Set<string>();
+    const allToStates = new Set<string>();
+    tpms.forEach(tpm => {
+        tpm.forEach((dist, fromState) => {
+            allFromStates.add(fromState);
+            dist.forEach((_, toState) => allToStates.add(toState));
+        });
     });
 
-    return { single_vars, pairwise, modelFit, conditional, empiricalJointPMF };
+    for (const fromState of allFromStates) {
+        const avgDist = new Map<string, number>();
+        for (const toState of allToStates) {
+            let sumProb = 0;
+            tpms.forEach(tpm => {
+                sumProb += tpm.get(fromState)?.get(toState) || 0;
+            });
+            avgDist.set(toState, sumProb / tpms.length);
+        }
+        avgTpm.set(fromState, avgDist);
+    }
+
+    // 2. Calculate H(avg_tpm)
+    const entropyOfAvg = calculateTPMEntropy(avgTpm, base);
+    
+    // 3. Calculate avg(H(tpm))
+    let sumOfEntropies = 0;
+    tpms.forEach(tpm => {
+        sumOfEntropies += calculateTPMEntropy(tpm, base);
+    });
+    const avgOfEntropies = sumOfEntropies / tpms.length;
+
+    return entropyOfAvg - avgOfEntropies;
+};
+
+const runHomogeneityCheck = (tpms: {tpm: TPM, label: string}[]): { hellingerDistances: HellingerResult[], gjsDivergence: number, isHomogeneous: boolean } => {
+    if (tpms.length < 2) {
+        return { hellingerDistances: [], gjsDivergence: 0, isHomogeneous: true };
+    }
+
+    const hellingerDistances: HellingerResult[] = [];
+    for (let i = 0; i < tpms.length; i++) {
+        for (let j = i + 1; j < tpms.length; j++) {
+            const dist = calculateHellingerDistanceTPM(tpms[i].tpm, tpms[j].tpm);
+            hellingerDistances.push({ pair: `${tpms[i].label} vs ${tpms[j].label}`, distance: dist });
+        }
+    }
+
+    const gjsDivergence = calculateGJS_TPM(tpms.map(t => t.tpm));
+    
+    const isHomogeneous = hellingerDistances.every(r => r.distance <= 0.5) && gjsDivergence <= 0.5;
+
+    return { hellingerDistances, gjsDivergence, isHomogeneous };
+};
+
+
+export const performTimeSeriesAnalysis = (text: string): TimeSeriesAnalysisResults => {
+    const lines = text.trim().split('\n');
+    const header = lines[0].split(',').map(h => h.trim());
+    const dataRows = lines.slice(1);
+
+    const timeLabels = dataRows.map(row => row.split(',')[0].trim());
+    const instanceData: string[][] = []; // numInstances x numTimeSteps
+    const numInstances = header.length - 1;
+    const numTimeSteps = timeLabels.length;
+
+    for (let i = 0; i < numInstances; i++) {
+        instanceData.push(dataRows.map(row => row.split(',')[i + 1].trim()));
+    }
+
+    const stateSpace = [...new Set(instanceData.flat())].sort();
+
+    // 1. Calculate all 1st-order TPMs: P(D_t | D_{t-1})
+    const tpms_firstOrder: { tpm: TPM; label: string }[] = [];
+    for (let t = 1; t < numTimeSteps; t++) {
+        tpms_firstOrder.push({
+            tpm: calculateTPM(timeLabels, instanceData, stateSpace, t, 1),
+            label: `P(${timeLabels[t]}|${timeLabels[t-1]})`
+        });
+    }
+    
+    // 2. Check for Time Homogeneity on 1st-order TPMs
+    const homogeneityCheck = runHomogeneityCheck(tpms_firstOrder);
+
+    // 3. Calculate all 2nd-order TPMs: P(D_t | D_{t-1}, D_{t-2})
+    const tpms_secondOrder: { tpm: TPM; label: string }[] = [];
+     for (let t = 2; t < numTimeSteps; t++) {
+        tpms_secondOrder.push({
+            tpm: calculateTPM(timeLabels, instanceData, stateSpace, t, 2),
+            label: `P(${timeLabels[t]}|${timeLabels[t-1]},${timeLabels[t-2]})`
+        });
+    }
+
+    // 4. Check for Markov property (as homogeneity of 2nd-order TPMs)
+    const markovianCheck = runHomogeneityCheck(tpms_secondOrder);
+
+    // 5. Calculate Full History TPM: P(D_n | D_{n-1}, ..., D_1)
+    const tpm_fullHistory = {
+        tpm: calculateTPM(timeLabels, instanceData, stateSpace, numTimeSteps - 1, numTimeSteps - 1),
+        label: `P(${timeLabels[numTimeSteps-1]}|...${timeLabels[0]})`
+    };
+
+    // 6. Calculate Average 1st-order TPM
+    const allFromStates = new Set<string>();
+    const allToStates = new Set<string>(stateSpace);
+    tpms_firstOrder.forEach(({tpm}) => tpm.forEach((_, fromState) => allFromStates.add(fromState)));
+    
+    const average_tpm: TPM = new Map();
+    for(const fromState of allFromStates) {
+        const avgDist = new Map<string, number>();
+        for (const toState of allToStates) {
+            let sumProb = 0;
+            tpms_firstOrder.forEach(({tpm}) => {
+                sumProb += tpm.get(fromState)?.get(toState) || 0;
+            });
+            avgDist.set(toState, sumProb / tpms_firstOrder.length);
+        }
+        average_tpm.set(fromState, avgDist);
+    }
+    const average_tpm_firstOrder = { tpm: average_tpm, label: 'Average 1st Order TPM' };
+
+    // 7. Weak Stationarity Analysis (Mean and Variance over time)
+    const weakStationarity = {
+        mean: [] as number[],
+        variance: [] as number[],
+        timeLabels: timeLabels,
+    };
+    for (let t = 0; t < numTimeSteps; t++) {
+        const valuesAtTimeT = instanceData.map(instance => Number(instance[t])).filter(v => !isNaN(v));
+        if (valuesAtTimeT.length > 0) {
+            const mean = valuesAtTimeT.reduce((a, b) => a + b, 0) / valuesAtTimeT.length;
+            const variance = valuesAtTimeT.length > 1 
+                ? valuesAtTimeT.reduce((a, v) => a + Math.pow(v - mean, 2), 0) / (valuesAtTimeT.length - 1)
+                : 0;
+            weakStationarity.mean.push(mean);
+            weakStationarity.variance.push(variance);
+        } else {
+            weakStationarity.mean.push(NaN);
+            weakStationarity.variance.push(NaN);
+        }
+    }
+    
+    return {
+        isHomogeneous: homogeneityCheck.isHomogeneous,
+        homogeneityMetrics: { hellingerDistances: homogeneityCheck.hellingerDistances, gjsDivergence: homogeneityCheck.gjsDivergence },
+        isMarkovian: markovianCheck.isHomogeneous,
+        markovianMetrics: { hellingerDistances: markovianCheck.hellingerDistances, gjsDivergence: markovianCheck.gjsDivergence },
+        tpms_firstOrder,
+        tpm_fullHistory,
+        average_tpm_firstOrder,
+        weakStationarity,
+        stateSpace,
+    };
 };

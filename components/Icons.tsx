@@ -60,6 +60,16 @@ export const IconTarget: React.FC<IconProps> = ({ className }) => (
     </svg>
 );
 
+export const IconTrendingUp: React.FC<IconProps> = ({ className }) => (
+    <svg xmlns="http://www.w3.org/2000/svg" className={className} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="2">
+        <path strokeLinecap="round" strokeLinejoin="round" d="M13 7l5 5m0 0l-5 5m5-5H6" />
+        <path strokeLinecap="round" strokeLinejoin="round" d="M13 17l5-5m0 0l-5-5m5 5H6" transform="rotate(90 12 12) translate(0, -24)"/>
+        <path d="M3 3v18h18" stroke="none"/>
+        <path strokeLinecap="round" strokeLinejoin="round" d="M7 17l4-4 3 3 5-5"/>
+    </svg>
+);
+
+
 // FIX: Replaced invalid `title` attribute on SVG with a nested <title> element for accessibility.
 export const IconCheck: React.FC<IconProps> = ({ className, title }) => (
     <svg xmlns="http://www.w3.org/2000/svg" className={className} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="3">
