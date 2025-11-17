@@ -107,7 +107,9 @@ const getSingleVarMetrics = (pmf: JointPMF, type: VariableType, ordinalOrder: st
 
     if (type === VariableType.Numerical && distribution.every(p => !isNaN(Number(p.value)))) {
         metrics.mean = calculateMean(distribution);
-        metrics.variance = calculateVariance(distribution, metrics.mean);
+        if(metrics.mean !== undefined){
+            metrics.variance = calculateVariance(distribution, metrics.mean);
+        }
     }
 
     return metrics;
@@ -319,7 +321,9 @@ const getConditionalDistributions = (
         const result: ConditionalResult = { conditionalVariable: var1.name, givenVariable: var2.name, conditionValue: val2, distribution: dist };
         if (var1IsNumeric) {
             result.mean = calculateMean(dist);
-            result.variance = calculateVariance(dist, result.mean);
+            if(result.mean !== undefined) {
+                result.variance = calculateVariance(dist, result.mean);
+            }
         }
         results[var2.name].push(result);
     }
@@ -337,7 +341,9 @@ const getConditionalDistributions = (
         const result: ConditionalResult = { conditionalVariable: var2.name, givenVariable: var1.name, conditionValue: val1, distribution: dist };
         if (var2IsNumeric) {
             result.mean = calculateMean(dist);
-            result.variance = calculateVariance(dist, result.mean);
+             if(result.mean !== undefined) {
+                result.variance = calculateVariance(dist, result.mean);
+            }
         }
         results[var1.name].push(result);
     }
@@ -382,52 +388,84 @@ const parseTheoreticalModel = (model: TheoreticalModel, varNamesInOrder: string[
     return jointPMF;
 };
 
-const klDivergence = (p: JointPMF, q: JointPMF): number => {
-    let divergence = 0;
-    const allKeys = new Set([...p.keys()]);
-    for (const key of allKeys) {
-        const pVal = p.get(key) || 0;
-        const qVal = q.get(key) || 0;
-        if (pVal > 1e-9 && qVal > 1e-9) {
-            divergence += pVal * Math.log2(pVal / qVal);
-        }
-    }
-    return divergence;
-};
 
 /**
- * Calculates the Hellinger distance between two simple Probability Mass Functions (PMFs).
- * This is used to compare the true historical distribution against the Markovian approximation.
- * @param pmf1 The first probability distribution.
- * @param pmf2 The second probability distribution.
+ * Calculates the Hellinger distance between two probability mass functions.
+ * This is a direct TypeScript translation of the provided MATLAB function.
+ * Formula: H(P, Q) = (1/√2) * ||√P - √Q||₂
+ * @param pmf1 The first probability distribution (model).
+ * @param pmf2 The second probability distribution (data).
  * @returns A number between 0 (identical) and 1 (maximally different).
  */
 const calculateHellingerDistance = (pmf1: JointPMF, pmf2: JointPMF): number => {
-    // Step 1: Get a set of all unique outcomes (keys) from both distributions.
     const allKeys = new Set([...pmf1.keys(), ...pmf2.keys()]);
-    let sum = 0;
+    let sumOfSquaredDiffs = 0;
 
-    // Step 2: Iterate through each unique outcome to calculate the squared difference.
     for (const key of allKeys) {
-        // Get the probability of the outcome from each PMF. Default to 0 if not present.
         const p1 = pmf1.get(key) || 0;
         const p2 = pmf2.get(key) || 0;
-
-        // Calculate the squared difference of the square roots of the probabilities.
-        sum += Math.pow(Math.sqrt(p1) - Math.sqrt(p2), 2);
+        sumOfSquaredDiffs += Math.pow(Math.sqrt(p1) - Math.sqrt(p2), 2);
     }
 
-    // Step 3 & 4: Take the square root of the sum and normalize it by dividing by sqrt(2).
-    return Math.sqrt(sum) / Math.sqrt(2);
+    return (1 / Math.sqrt(2)) * Math.sqrt(sumOfSquaredDiffs);
 };
 
-const calculateJensenShannonDistance = (pmf1: JointPMF, pmf2: JointPMF): number => {
-    const m = new Map<string, number>();
-    const allKeys = new Set([...pmf1.keys(), ...pmf2.keys()]);
-    for(const key of allKeys) {
-        m.set(key, ((pmf1.get(key) || 0) + (pmf2.get(key) || 0)) / 2);
+/**
+ * Calculates the Shannon entropy (base 2) of a probability mass function.
+ * It normalizes the PMF internally to handle potential floating point errors.
+ * @param pmf A map representing the probability distribution.
+ * @returns The Shannon entropy in bits.
+ */
+const calculateShannonEntropy = (pmf: JointPMF): number => {
+    let total = 0;
+    for (const p of pmf.values()) {
+        total += p;
     }
-    return Math.sqrt(0.5 * klDivergence(pmf1, m) + 0.5 * klDivergence(pmf2, m));
+    // Use a small epsilon for floating point comparison to avoid division by zero.
+    if (Math.abs(total) < 1e-9) return 0;
+
+    let H = 0;
+    for (const p of pmf.values()) {
+        if (p > 0) {
+            const normalizedP = p / total;
+            H -= normalizedP * Math.log2(normalizedP);
+        }
+    }
+    return H;
+};
+
+/**
+ * Calculates the Generalized Jensen-Shannon Divergence for multiple PMFs.
+ * The divergence is H(M) - Σ(H(Pi))/n, where M is the mixture distribution.
+ * @param pmfs An array of JointPMF objects.
+ * @returns The GJS divergence in bits.
+ */
+const calculateGeneralizedJensenShannonDivergence = (pmfs: JointPMF[]): number => {
+    const n = pmfs.length;
+    if (n < 2) return 0;
+
+    const mixturePmf: JointPMF = new Map();
+    const allKeys = new Set<string>();
+    pmfs.forEach(pmf => pmf.forEach((_, key) => allKeys.add(key)));
+
+    for(const key of allKeys) {
+        let sumProb = 0;
+        pmfs.forEach(pmf => {
+            sumProb += pmf.get(key) || 0;
+        });
+        mixturePmf.set(key, sumProb / n);
+    }
+    
+    // Entropy of the mixture
+    const H_M = calculateShannonEntropy(mixturePmf);
+    
+    // Mean of the entropies
+    const H_sum = pmfs.reduce((sum, pmf) => sum + calculateShannonEntropy(pmf), 0);
+    const H_mean = H_sum / n;
+
+    // The result of JSD is between 0 and 1 (for log base 2).
+    // Clamp to avoid small negative numbers due to floating point errors.
+    return Math.max(0, H_M - H_mean);
 };
 
 
@@ -764,7 +802,7 @@ export const performFullAnalysis = (variables: RandomVariable[], theoreticalMode
         modelFit.push({
             modelName: model.name,
             hellingerDistance: calculateHellingerDistance(empiricalJointPMF, parsedModelPMF),
-            jensenShannonDistance: calculateJensenShannonDistance(empiricalJointPMF, parsedModelPMF),
+            jensenShannonDistance: Math.sqrt(calculateGeneralizedJensenShannonDivergence([empiricalJointPMF, parsedModelPMF])),
             mse: mseMetrics
         });
     });
@@ -902,22 +940,6 @@ const tpmToJointPmf = (tpm: TPM, allFromStates: string[], allToStates: string[])
     return pmf;
 };
 
-// Helper to calculate Shannon Entropy (base-2) for a PMF.
-const calculateShannonEntropy = (pmf: JointPMF): number => {
-    let total = 0;
-    for (const p of pmf.values()) total += p;
-    if (total === 0) return 0;
-
-    let H = 0;
-    for (const p of pmf.values()) {
-        if (p > 0) {
-            const normalizedP = p / total;
-            H -= normalizedP * Math.log2(normalizedP);
-        }
-    }
-    return H;
-};
-
 const calculateGJS_TPM_normalized = (tpms: TPM[]): number => {
     const n = tpms.length;
     if (n < 2) return 0;
@@ -937,27 +959,11 @@ const calculateGJS_TPM_normalized = (tpms: TPM[]): number => {
     // 2. Convert each TPM to a normalized joint PMF.
     const pmfs = tpms.map(tpm => tpmToJointPmf(tpm, fromStateList, toStateList));
 
-    // 3. Create the mixture PMF.
-    const mixturePmf: JointPMF = new Map();
-    const allKeys = new Set<string>();
-    pmfs.forEach(pmf => pmf.forEach((_, key) => allKeys.add(key)));
+    // 3. Calculate divergence using the new generalized function.
+    const divergence_bits = calculateGeneralizedJensenShannonDivergence(pmfs);
 
-    for(const key of allKeys) {
-        let sumProb = 0;
-        pmfs.forEach(pmf => {
-            sumProb += pmf.get(key) || 0;
-        });
-        mixturePmf.set(key, sumProb / n);
-    }
-    
-    // 4. Calculate entropies.
-    const H_M = calculateShannonEntropy(mixturePmf);
-    const H_sum = pmfs.reduce((sum, pmf) => sum + calculateShannonEntropy(pmf), 0);
-    const H_mean = H_sum / n;
-
-    // 5. Calculate normalized GJS.
-    const JSD_bits = Math.max(0, H_M - H_mean);
-    const JSD_norm = JSD_bits / Math.log2(n);
+    // 4. Calculate normalized GJS.
+    const JSD_norm = divergence_bits / Math.log2(n);
     
     return Math.min(Math.max(JSD_norm, 0), 1); // Clamp to [0,1]
 };
@@ -1069,7 +1075,7 @@ export const performTimeSeriesAnalysis = (text: string): TimeSeriesAnalysisResul
     }
 
     const hellingerDistance = calculateHellingerDistance(fullHistoryPMF, markovApproximationPMF);
-    const jensenShannonDistance = calculateJensenShannonDistance(fullHistoryPMF, markovApproximationPMF);
+    const jensenShannonDistance = Math.sqrt(calculateGeneralizedJensenShannonDivergence([fullHistoryPMF, markovApproximationPMF]));
 
     const markovianFit = {
         fullHistoryPMF,
