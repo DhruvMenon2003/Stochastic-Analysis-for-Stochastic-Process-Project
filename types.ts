@@ -102,7 +102,7 @@ export interface TimeSeriesAnalysisResults {
     isHomogeneous: boolean;
     homogeneityMetrics: {
         hellingerDistances: HellingerResult[];
-        gjsDivergence: number;
+        gjsDistance: number;
     };
     markovianFit: {
         fullHistoryPMF: JointPMF;

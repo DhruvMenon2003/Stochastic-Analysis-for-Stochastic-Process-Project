@@ -23,7 +23,7 @@ const HomogeneityDetailsModal: React.FC<{
                 <div>
                     <h4 className="text-lg font-semibold mb-3">Distance Metrics</h4>
                     <div className="p-4 bg-gray-50 dark:bg-gray-800/50 rounded-lg space-y-3">
-                        <p><strong>Generalized Jensen-Shannon Divergence (Normalized):</strong> <span className="font-mono text-blue-600 dark:text-blue-400 text-lg">{homogeneityMetrics.gjsDivergence.toFixed(4)}</span></p>
+                        <p><strong>Generalized Jensen-Shannon Distance (Normalized):</strong> <span className="font-mono text-blue-600 dark:text-blue-400 text-lg">{homogeneityMetrics.gjsDistance.toFixed(4)}</span></p>
                         <div>
                             <strong>Pairwise Hellinger Distances:</strong>
                             <ul className="list-disc pl-5 mt-2 text-sm font-mono space-y-1">

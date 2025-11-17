@@ -940,7 +940,7 @@ const tpmToJointPmf = (tpm: TPM, allFromStates: string[], allToStates: string[])
     return pmf;
 };
 
-const calculateGJS_TPM_normalized = (tpms: TPM[]): number => {
+const calculateGJS_TPM_Distance_normalized = (tpms: TPM[]): number => {
     const n = tpms.length;
     if (n < 2) return 0;
 
@@ -962,16 +962,18 @@ const calculateGJS_TPM_normalized = (tpms: TPM[]): number => {
     // 3. Calculate divergence using the new generalized function.
     const divergence_bits = calculateGeneralizedJensenShannonDivergence(pmfs);
 
-    // 4. Calculate normalized GJS.
-    const JSD_norm = divergence_bits / Math.log2(n);
+    // 4. Calculate normalized GJS Divergence.
+    const JSD_norm_divergence = divergence_bits / Math.log2(n);
+    const clamped_divergence = Math.min(Math.max(JSD_norm_divergence, 0), 1);
     
-    return Math.min(Math.max(JSD_norm, 0), 1); // Clamp to [0,1]
+    // 5. Return the distance, which is the square root of the normalized divergence.
+    return Math.sqrt(clamped_divergence);
 };
 
 
-const runHomogeneityCheck = (tpms: {tpm: TPM, label: string}[]): { hellingerDistances: HellingerResult[], gjsDivergence: number, isHomogeneous: boolean } => {
+const runHomogeneityCheck = (tpms: {tpm: TPM, label: string}[]): { hellingerDistances: HellingerResult[], gjsDistance: number, isHomogeneous: boolean } => {
     if (tpms.length < 2) {
-        return { hellingerDistances: [], gjsDivergence: 0, isHomogeneous: true };
+        return { hellingerDistances: [], gjsDistance: 0, isHomogeneous: true };
     }
 
     const hellingerDistances: HellingerResult[] = [];
@@ -982,14 +984,14 @@ const runHomogeneityCheck = (tpms: {tpm: TPM, label: string}[]): { hellingerDist
         }
     }
 
-    const gjsDivergence = calculateGJS_TPM_normalized(tpms.map(t => t.tpm));
+    const gjsDistance = calculateGJS_TPM_Distance_normalized(tpms.map(t => t.tpm));
     
     // NOTE: The 0.5 threshold for homogeneity is a heuristic. For rigorous scientific
     // applications, this might be replaced with a formal statistical test (e.g., Chi-squared test)
-    // or a user-configurable sensitivity level.
-    const isHomogeneous = hellingerDistances.every(r => r.distance <= 0.5) && gjsDivergence <= 0.5;
+    // or a user-configurable sensitivity level. It is applied to both Hellinger and JS distances.
+    const isHomogeneous = hellingerDistances.every(r => r.distance <= 0.5) && gjsDistance <= 0.5;
 
-    return { hellingerDistances, gjsDivergence, isHomogeneous };
+    return { hellingerDistances, gjsDistance, isHomogeneous };
 };
 
 
@@ -1112,7 +1114,7 @@ export const performTimeSeriesAnalysis = (text: string): TimeSeriesAnalysisResul
     
     return {
         isHomogeneous: homogeneityCheck.isHomogeneous,
-        homogeneityMetrics: { hellingerDistances: homogeneityCheck.hellingerDistances, gjsDivergence: homogeneityCheck.gjsDivergence },
+        homogeneityMetrics: { hellingerDistances: homogeneityCheck.hellingerDistances, gjsDistance: homogeneityCheck.gjsDistance },
         markovianFit,
         tpms_firstOrder,
         tpm_fullHistory,
