@@ -100,7 +100,7 @@ const HomogeneityDetailsModal: React.FC<{
                 <div>
                     <h4 className="text-lg font-semibold mb-3">Distance Metrics</h4>
                     <div className="p-4 bg-gray-50 dark:bg-gray-800/50 rounded-lg space-y-3">
-                        <p><strong>Generalized Jensen-Shannon Divergence:</strong> <span className="font-mono text-blue-600 dark:text-blue-400 text-lg">{homogeneityMetrics.gjsDivergence.toFixed(4)}</span></p>
+                        <p><strong>Generalized Jensen-Shannon Divergence (Normalized):</strong> <span className="font-mono text-blue-600 dark:text-blue-400 text-lg">{homogeneityMetrics.gjsDivergence.toFixed(4)}</span></p>
                         <div>
                             <strong>Pairwise Hellinger Distances:</strong>
                             <ul className="list-disc pl-5 mt-2 text-sm font-mono space-y-1">
@@ -409,6 +409,10 @@ const App: React.FC = () => {
     };
 
     const variables = useMemo(() => crossSectionalResults?.variables || [], [crossSectionalResults]);
+    
+    // Detect analysis type from input text to conditionally render UI elements
+    const analysisType = useMemo(() => detectAnalysisType(inputText), [inputText]);
+
 
     const areModelsValid = useMemo(() => {
         if (theoreticalModels.length === 0 || variables.length === 0) {
@@ -419,11 +423,11 @@ const App: React.FC = () => {
                 const prob = Number(probStr);
                 return isNaN(prob) ? acc : acc + prob;
             }, 0);
-             const stateSpaces = variables.map(v => model.stateSpaces[v.name]?.split(',').map(s => s.trim()).filter(s => s) ?? []);
+            // FIX: Correctly handle potentially undefined state spaces to avoid runtime errors
+            // and ensure correct type inference for `stateSpaces`.
+             const stateSpaces = variables.map(v => (model.stateSpaces[v.name]?.split(',') ?? []).map(s => s.trim()).filter(s => s));
              if (stateSpaces.some(s => s.length === 0)) return true;
 
-            // FIX: The `reduce` method caused a TypeScript compilation error. Replaced it with a standard `for` loop,
-            // which is more explicit and resolves the type inference issue.
             let expectedProbs = 1;
             for (const space of stateSpaces) {
                 expectedProbs *= space.length;
@@ -447,7 +451,6 @@ const App: React.FC = () => {
                 setAnalysisMode(mode);
 
                 if (mode === 'cross-sectional') {
-                    // Get variable names from data to generate the distribution string for the model
                     const dataVarNames = parseInput(inputText).map(v => v.name);
                     const modelsForAnalysis = theoreticalModels.map(m => ({
                         ...m,
@@ -653,40 +656,42 @@ const App: React.FC = () => {
                             )}
                         </div>
 
-                        <div className="bg-white dark:bg-gray-900 p-6 rounded-lg shadow-lg self-start">
-                            <h2 className="text-xl font-semibold mb-4">Theoretical Models (Cross-Sectional)</h2>
-                             <div className="space-y-4">
-                                {theoreticalModels.map((model) => (
-                                    <div key={model.id} className="p-4 border border-gray-200 dark:border-gray-700 rounded-lg">
-                                        <div className="flex justify-between items-center mb-3">
-                                            <input
-                                                type="text"
-                                                value={model.name}
-                                                onChange={(e) => updateModel(model.id, { name: e.target.value })}
-                                                className="font-semibold text-md bg-transparent focus:outline-none focus:ring-0 border-0 border-b-2 border-gray-300 dark:border-gray-600 focus:border-blue-500"
-                                            />
-                                            <button onClick={() => deleteModel(model.id)} className="text-red-500 hover:text-red-700 dark:text-red-400 dark:hover:text-red-300" title="Delete Model">
-                                                <IconTrash className="w-5 h-5" />
-                                            </button>
+                        {analysisType === 'cross-sectional' && (
+                            <div className="bg-white dark:bg-gray-900 p-6 rounded-lg shadow-lg self-start">
+                                <h2 className="text-xl font-semibold mb-4">Theoretical Models</h2>
+                                <div className="space-y-4">
+                                    {theoreticalModels.map((model) => (
+                                        <div key={model.id} className="p-4 border border-gray-200 dark:border-gray-700 rounded-lg">
+                                            <div className="flex justify-between items-center mb-3">
+                                                <input
+                                                    type="text"
+                                                    value={model.name}
+                                                    onChange={(e) => updateModel(model.id, { name: e.target.value })}
+                                                    className="font-semibold text-md bg-transparent focus:outline-none focus:ring-0 border-0 border-b-2 border-gray-300 dark:border-gray-600 focus:border-blue-500"
+                                                />
+                                                <button onClick={() => deleteModel(model.id)} className="text-red-500 hover:text-red-700 dark:text-red-400 dark:hover:text-red-300" title="Delete Model">
+                                                    <IconTrash className="w-5 h-5" />
+                                                </button>
+                                            </div>
+                                            {dataVariableNames.length > 0 ? (
+                                                <TheoreticalModelInput
+                                                    model={model}
+                                                    variableNames={dataVariableNames}
+                                                    onUpdate={updateModel}
+                                                />
+                                            ) : (
+                                                <p className="text-sm text-gray-500 dark:text-gray-400 italic">
+                                                    Analyze data first to define models.
+                                                </p>
+                                            )}
                                         </div>
-                                        {dataVariableNames.length > 0 ? (
-                                            <TheoreticalModelInput
-                                                model={model}
-                                                variableNames={dataVariableNames}
-                                                onUpdate={updateModel}
-                                            />
-                                        ) : (
-                                            <p className="text-sm text-gray-500 dark:text-gray-400 italic">
-                                                Analyze cross-sectional data first to define models.
-                                            </p>
-                                        )}
-                                    </div>
-                                ))}
-                                <button onClick={addModel} className="w-full py-2 text-sm font-medium text-blue-600 bg-blue-100 dark:bg-blue-900/50 dark:text-blue-300 rounded-md hover:bg-blue-200 dark:hover:bg-blue-800 transition-colors">
-                                    + Add Model
-                                </button>
+                                    ))}
+                                    <button onClick={addModel} className="w-full py-2 text-sm font-medium text-blue-600 bg-blue-100 dark:bg-blue-900/50 dark:text-blue-300 rounded-md hover:bg-blue-200 dark:hover:bg-blue-800 transition-colors">
+                                        + Add Model
+                                    </button>
+                                </div>
                             </div>
-                        </div>
+                        )}
 
                          <div className="bg-white dark:bg-gray-900 p-6 rounded-lg shadow-lg self-start relative">
                             <div title={!areModelsValid ? "Please ensure all model probabilities sum to 1." : ""}>
@@ -765,8 +770,10 @@ const App: React.FC = () => {
                                                 models={theoreticalModels}
                                             />
                                             <JointDistributionTable
-                                                jointPMF={crossSectionalResults.empiricalJointPMF}
+                                                empiricalJointPMF={crossSectionalResults.empiricalJointPMF}
+                                                theoreticalJointPMFs={crossSectionalResults.theoreticalJointPMFs}
                                                 variables={variables}
+                                                models={theoreticalModels}
                                             />
                                             <ConditionalAnalysis
                                                 conditionalResults={crossSectionalResults.conditional}

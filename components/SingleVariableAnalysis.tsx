@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useMemo } from 'react';
 import { ResponsiveContainer, BarChart, CartesianGrid, XAxis, YAxis, Tooltip, Legend, Bar } from 'recharts';
 import { type RandomVariable, type SingleVarResults, VariableType, type TheoreticalModel, SingleVarMetrics } from '../types';
 
@@ -11,12 +11,11 @@ interface SingleVariableAnalysisProps {
 
 const formatNumber = (num?: number) => num !== undefined && num !== null ? num.toFixed(4) : 'N/A';
 
-// FIX: A robust function to render metric values of different types (number, string, array).
 const renderMetricValue = (value: any): string => {
     if (value === undefined || value === null) return 'N/A';
     if (Array.isArray(value)) return value.join(', ');
     if (typeof value === 'number') return formatNumber(value);
-    return String(value); // Handles string-based values like median for ordinal types
+    return String(value);
 };
 
 const CustomTooltip: React.FC<any> = ({ active, payload, label }) => {
@@ -52,7 +51,26 @@ const SingleVariableAnalysis: React.FC<SingleVariableAnalysisProps> = ({ variabl
         ? results.empirical 
         : results.theoretical[selectedSourceId];
 
-    const metricsToDisplay = ['Mean', 'Variance', 'Mode', 'Median'];
+    const metricsToDisplay = useMemo(() => {
+        const allMetrics: {name: string, key: keyof SingleVarMetrics}[] = [
+            { name: 'Mean', key: 'mean' },
+            { name: 'Variance', key: 'variance' },
+            { name: 'Median', key: 'median' },
+            { name: 'Mode', key: 'mode' },
+        ];
+        
+        switch (variable.type) {
+            case VariableType.Numerical:
+                return allMetrics;
+            case VariableType.Ordinal:
+                return allMetrics.filter(m => m.key === 'median' || m.key === 'mode');
+            case VariableType.Nominal:
+                return allMetrics.filter(m => m.key === 'mode');
+            default:
+                return [];
+        }
+    }, [variable.type]);
+
 
     return (
         <div className="bg-white dark:bg-gray-900 rounded-lg shadow-lg p-6 space-y-4">
@@ -99,17 +117,13 @@ const SingleVariableAnalysis: React.FC<SingleVariableAnalysisProps> = ({ variabl
                             </tr>
                         </thead>
                         <tbody>
-                            {metricsToDisplay.map(metricName => {
-                                const key = metricName.toLowerCase() as keyof SingleVarMetrics;
-                                const empiricalValue = results.empirical[key];
-                                if (empiricalValue === undefined || (Array.isArray(empiricalValue) && empiricalValue.length === 0)) return null;
-
+                            {metricsToDisplay.map(metric => {
                                 return (
-                                    <tr key={metricName} className="border-b border-gray-200 dark:border-gray-700 last:border-0">
-                                        <td className="py-2 font-medium">{metricName}</td>
-                                        <td className="py-2 font-mono">{renderMetricValue(empiricalValue)}</td>
+                                    <tr key={metric.name} className="border-b border-gray-200 dark:border-gray-700 last:border-0">
+                                        <td className="py-2 font-medium">{metric.name}</td>
+                                        <td className="py-2 font-mono">{renderMetricValue(results.empirical[metric.key])}</td>
                                         {models.filter(m => results.theoretical[m.id]).map(m => {
-                                            const modelValue = results.theoretical[m.id]?.[key];
+                                            const modelValue = results.theoretical[m.id]?.[metric.key];
                                             return <td key={m.id} className="py-2 font-mono">{renderMetricValue(modelValue)}</td>
                                         })}
                                     </tr>

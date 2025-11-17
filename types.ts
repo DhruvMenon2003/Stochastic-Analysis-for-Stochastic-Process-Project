@@ -71,6 +71,7 @@ export interface AnalysisResults {
     modelFit: ModelFitResult[];
     conditional: { [pairKey: string]: PairwiseConditionalAnalysis };
     empiricalJointPMF: JointPMF;
+    theoreticalJointPMFs: { [modelId: string]: JointPMF };
 }
 
 export interface TheoreticalModel {
@@ -85,7 +86,7 @@ export interface ModelFitResult {
     modelName: string;
     hellingerDistance?: number;
     jensenShannonDistance?: number;
-    mse?: { [variableName: string]: number };
+    mse?: { [metricName: string]: number };
     error?: string;
 }
 

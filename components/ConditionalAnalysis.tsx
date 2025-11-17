@@ -11,48 +11,44 @@ const formatNumber = (num?: number) => (num !== undefined && num !== null ? num.
 
 const ConditionalResultTable: React.FC<{
     results: ConditionalResult[];
-    title: string;
-}> = ({ results, title }) => {
-    if (!results || results.length === 0) return null;
+}> = ({ results }) => {
+    if (!results || results.length === 0) return <p className="text-sm text-center italic text-gray-500 dark:text-gray-400 py-4">No conditional data available for this selection.</p>;
 
     return (
-        <div className="mb-6">
-            <h4 className="text-md font-semibold text-gray-700 dark:text-gray-300 mb-2">{title}</h4>
-            <div className="overflow-x-auto p-1">
-                <table className="min-w-full text-sm divide-y divide-gray-200 dark:divide-gray-700">
-                     <thead className="bg-gray-50 dark:bg-gray-800">
-                        <tr>
-                            <th className="px-3 py-2 text-left font-medium">Value</th>
-                            <th className="px-3 py-2 text-left font-medium">Probability</th>
-                            <th className="px-3 py-2 text-left font-medium">Mean</th>
-                            <th className="px-3 py-2 text-left font-medium">Variance</th>
-                        </tr>
-                    </thead>
-                    <tbody className="bg-white dark:bg-gray-900 divide-y divide-gray-200 dark:divide-gray-700">
-                        {results.map(res => (
-                            <React.Fragment key={res.conditionValue}>
-                                 <tr className="bg-gray-50 dark:bg-gray-800/50">
-                                    <td colSpan={4} className="px-3 py-2 font-bold text-gray-800 dark:text-gray-200">
-                                        Condition: {res.givenVariable} = {res.conditionValue}
-                                    </td>
+        <div className="overflow-x-auto p-1">
+            <table className="min-w-full text-sm divide-y divide-gray-200 dark:divide-gray-700">
+                 <thead className="bg-gray-50 dark:bg-gray-800">
+                    <tr>
+                        <th className="px-3 py-2 text-left font-medium">Value</th>
+                        <th className="px-3 py-2 text-left font-medium">Probability</th>
+                        <th className="px-3 py-2 text-left font-medium">Mean</th>
+                        <th className="px-3 py-2 text-left font-medium">Variance</th>
+                    </tr>
+                </thead>
+                <tbody className="bg-white dark:bg-gray-900 divide-y divide-gray-200 dark:divide-gray-700">
+                    {results.map(res => (
+                        <React.Fragment key={res.conditionValue}>
+                             <tr className="bg-gray-50 dark:bg-gray-800/50">
+                                <td colSpan={4} className="px-3 py-2 font-bold text-gray-800 dark:text-gray-200">
+                                    Condition: {res.givenVariable} = {res.conditionValue}
+                                </td>
+                            </tr>
+                            {res.distribution.map((distPoint, index) => (
+                                <tr key={distPoint.value}>
+                                    <td className="px-3 py-2">{distPoint.value}</td>
+                                    <td className="px-3 py-2 font-mono">{formatNumber(distPoint.probability)}</td>
+                                    {index === 0 && (
+                                        <>
+                                            <td rowSpan={res.distribution.length} className="px-3 py-2 font-mono align-top border-l border-gray-200 dark:border-gray-700">{formatNumber(res.mean)}</td>
+                                            <td rowSpan={res.distribution.length} className="px-3 py-2 font-mono align-top border-l border-gray-200 dark:border-gray-700">{formatNumber(res.variance)}</td>
+                                        </>
+                                    )}
                                 </tr>
-                                {res.distribution.map((distPoint, index) => (
-                                    <tr key={distPoint.value}>
-                                        <td className="px-3 py-2">{distPoint.value}</td>
-                                        <td className="px-3 py-2 font-mono">{formatNumber(distPoint.probability)}</td>
-                                        {index === 0 && (
-                                            <>
-                                                <td rowSpan={res.distribution.length} className="px-3 py-2 font-mono align-top border-l border-gray-200 dark:border-gray-700">{formatNumber(res.mean)}</td>
-                                                <td rowSpan={res.distribution.length} className="px-3 py-2 font-mono align-top border-l border-gray-200 dark:border-gray-700">{formatNumber(res.variance)}</td>
-                                            </>
-                                        )}
-                                    </tr>
-                                ))}
-                            </React.Fragment>
-                        ))}
-                    </tbody>
-                </table>
-            </div>
+                            ))}
+                        </React.Fragment>
+                    ))}
+                </tbody>
+            </table>
         </div>
     );
 };
@@ -61,31 +57,56 @@ const ConditionalResultTable: React.FC<{
 const ConditionalAnalysis: React.FC<ConditionalAnalysisProps> = ({ conditionalResults, variables, models }) => {
     const [var1Id, setVar1Id] = useState<string>(variables[0]?.id || '');
     const [var2Id, setVar2Id] = useState<string>(variables[1]?.id || '');
+    const [selectedSourceId, setSelectedSourceId] = useState<string>('empirical');
 
-    const selectedResults = useMemo(() => {
-        if (!var1Id || !var2Id || var1Id === var2Id) return null;
+    const { selectedResults, sources } = useMemo(() => {
+        if (!var1Id || !var2Id || var1Id === var2Id) return { selectedResults: null, sources: [] };
         
-        // Ensure consistent key regardless of selection order
         const v1 = variables.find(v => v.id === var1Id);
         const v2 = variables.find(v => v.id === var2Id);
-        if (!v1 || !v2) return null;
+        if (!v1 || !v2) return { selectedResults: null, sources: [] };
 
         const sortedVars = [v1, v2].sort((a,b) => a.id.localeCompare(b.id));
         const key = `${sortedVars[0].id}-${sortedVars[1].id}`;
         
-        return conditionalResults[key];
+        const results = conditionalResults[key];
+        
+        const availableSources = [
+            { id: 'empirical', name: 'Empirical (Data)' },
+            ...models.filter(m => results?.theoretical[m.id]).map(m => ({ id: m.id, name: m.name }))
+        ];
 
-    }, [var1Id, var2Id, conditionalResults, variables]);
+        return { selectedResults: results, sources: availableSources };
+    }, [var1Id, var2Id, conditionalResults, variables, models]);
 
     if (variables.length < 2) return null;
 
     const selectedVar1 = variables.find(v => v.id === var1Id);
     const selectedVar2 = variables.find(v => v.id === var2Id);
 
+    const displayedResults1 = selectedSourceId === 'empirical' 
+        ? selectedResults?.empirical[selectedVar2?.name ?? ''] 
+        : selectedResults?.theoretical[selectedSourceId]?.[selectedVar2?.name ?? ''];
+        
+    const displayedResults2 = selectedSourceId === 'empirical'
+        ? selectedResults?.empirical[selectedVar1?.name ?? '']
+        : selectedResults?.theoretical[selectedSourceId]?.[selectedVar1?.name ?? ''];
+
     return (
         <div className="space-y-4">
             <div className="border-t border-gray-200 dark:border-gray-700 pt-6">
-                <h3 className="text-xl font-semibold mb-4">Conditional Analysis</h3>
+                 <div className="flex flex-wrap items-center justify-between gap-4 mb-4">
+                    <h3 className="text-xl font-semibold">Conditional Analysis</h3>
+                     {sources.length > 1 && (
+                        <select
+                            value={selectedSourceId}
+                            onChange={(e) => setSelectedSourceId(e.target.value)}
+                            className="block text-sm border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 focus:outline-none focus:ring-blue-500 focus:border-blue-500 rounded-md py-1.5"
+                        >
+                            {sources.map(s => <option key={s.id} value={s.id}>{s.name}</option>)}
+                        </select>
+                    )}
+                 </div>
                 <div className="flex flex-wrap items-center gap-4 mb-4 p-4 bg-gray-50 dark:bg-gray-800/50 rounded-lg">
                     <div>
                         <label htmlFor="var1-select" className="text-sm font-medium mr-2">Variable (e.g., A)</label>
@@ -110,17 +131,11 @@ const ConditionalAnalysis: React.FC<ConditionalAnalysisProps> = ({ conditionalRe
                     <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
                         <div>
                              <h4 className="text-lg font-semibold mb-2 text-center">P({selectedVar1.name} | {selectedVar2.name})</h4>
-                             <ConditionalResultTable results={selectedResults.empirical[selectedVar2.name]} title="Empirical (Data)" />
-                             {models.filter(m => selectedResults.theoretical[m.id]?.[selectedVar2.name]).map(m => (
-                                <ConditionalResultTable key={m.id} results={selectedResults.theoretical[m.id][selectedVar2.name]} title={m.name} />
-                             ))}
+                             {displayedResults1 && <ConditionalResultTable results={displayedResults1} />}
                         </div>
                          <div>
                              <h4 className="text-lg font-semibold mb-2 text-center">P({selectedVar2.name} | {selectedVar1.name})</h4>
-                             <ConditionalResultTable results={selectedResults.empirical[selectedVar1.name]} title="Empirical (Data)" />
-                             {models.filter(m => selectedResults.theoretical[m.id]?.[selectedVar1.name]).map(m => (
-                                <ConditionalResultTable key={m.id} results={selectedResults.theoretical[m.id][selectedVar1.name]} title={m.name} />
-                             ))}
+                              {displayedResults2 && <ConditionalResultTable results={displayedResults2} />}
                         </div>
                     </div>
                 )}
