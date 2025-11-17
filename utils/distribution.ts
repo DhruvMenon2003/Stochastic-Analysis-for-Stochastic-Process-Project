@@ -48,34 +48,18 @@ export const getSingleVarMetrics = (pmf: JointPMF, type: VariableType, ordinalOr
 };
 
 /**
- * Calculates the joint probability mass function from the raw data using a systematic grid-based approach.
+ * Calculates the joint probability mass function from the raw data.
  */
 export const getEmpiricalJointPMF = (variables: RandomVariable[]): JointPMF => {
-    const numSamples = variables[0]?.data.length || 0;
-    if (numSamples === 0 || variables.length === 0) {
-        return new Map();
-    }
-
-    // Determine state space for each variable from the data.
-    const stateSpaces = variables.map(v => [...new Set(v.data)].sort());
-
-    // Generate all possible outcomes (the grid).
-    const allPossibleOutcomes = cartesianProduct(...stateSpaces);
-
-    // Initialize the PMF for the entire grid with counts of 0.
     const jointPMF: JointPMF = new Map();
-    allPossibleOutcomes.forEach(outcome => {
-        jointPMF.set(outcome.join(','), 0);
-    });
+    const numSamples = variables[0]?.data.length || 0;
+    if (numSamples === 0) return jointPMF;
 
-    // Count the occurrences of observed outcomes.
     for (let i = 0; i < numSamples; i++) {
         const outcome = variables.map(v => v.data[i]).join(',');
-        // This outcome is guaranteed to exist in the map from the previous step
-        jointPMF.set(outcome, (jointPMF.get(outcome)!) + 1);
+        jointPMF.set(outcome, (jointPMF.get(outcome) || 0) + 1);
     }
 
-    // Convert counts to probabilities.
     for (const [outcome, count] of jointPMF.entries()) {
         jointPMF.set(outcome, count / numSamples);
     }
