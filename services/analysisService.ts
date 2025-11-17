@@ -353,14 +353,29 @@ const klDivergence = (p: JointPMF, q: JointPMF): number => {
     return divergence;
 };
 
+/**
+ * Calculates the Hellinger distance between two simple Probability Mass Functions (PMFs).
+ * This is used to compare the true historical distribution against the Markovian approximation.
+ * @param pmf1 The first probability distribution.
+ * @param pmf2 The second probability distribution.
+ * @returns A number between 0 (identical) and 1 (maximally different).
+ */
 const calculateHellingerDistance = (pmf1: JointPMF, pmf2: JointPMF): number => {
+    // Step 1: Get a set of all unique outcomes (keys) from both distributions.
     const allKeys = new Set([...pmf1.keys(), ...pmf2.keys()]);
     let sum = 0;
+
+    // Step 2: Iterate through each unique outcome to calculate the squared difference.
     for (const key of allKeys) {
+        // Get the probability of the outcome from each PMF. Default to 0 if not present.
         const p1 = pmf1.get(key) || 0;
         const p2 = pmf2.get(key) || 0;
+
+        // Calculate the squared difference of the square roots of the probabilities.
         sum += Math.pow(Math.sqrt(p1) - Math.sqrt(p2), 2);
     }
+
+    // Step 3 & 4: Take the square root of the sum and normalize it by dividing by sqrt(2).
     return Math.sqrt(sum) / Math.sqrt(2);
 };
 
@@ -498,7 +513,7 @@ export const exportToCsv = (results: AnalysisResults, variables: RandomVariable[
     return csv;
 };
 
-export const performFullAnalysis = (inputText: string): AnalysisResults => {
+export const performFullAnalysis = (inputText: string, theoreticalModels: TheoreticalModel[] = []): AnalysisResults => {
     const parsedData = parseInput(inputText);
     if (parsedData.length === 0 || parsedData[0].data.length === 0) {
         throw new Error("No data found. Please ensure the input has a header and data rows.");
@@ -516,8 +531,7 @@ export const performFullAnalysis = (inputText: string): AnalysisResults => {
     }
     
     const numVars = variables.length;
-    const varMap = new Map(variables.map((v, i) => [v.id, { ...v, index: i }]));
-
+    
     // --- EMPIRICAL ANALYSIS ---
     const empiricalJointPMF = getEmpiricalJointPMF(variables);
     const single_vars: { [variableId: string]: SingleVarResults } = {};
@@ -562,8 +576,33 @@ export const performFullAnalysis = (inputText: string): AnalysisResults => {
         }
     }
     
-    // --- THEORETICAL & MODEL FIT ANALYSIS (Placeholder, as models are UI-driven) ---
+    // --- THEORETICAL & MODEL FIT ANALYSIS ---
     const modelFit: ModelFitResult[] = [];
+    const varNamesInOrder = variables.map(v => v.name);
+
+    theoreticalModels.forEach(model => {
+        const parsedModelPMF = parseTheoreticalModel(model, varNamesInOrder);
+        
+        if (typeof parsedModelPMF === 'string') {
+            modelFit.push({ modelName: model.name, error: parsedModelPMF });
+            return;
+        }
+
+        if (parsedModelPMF.size === 0) {
+            // Don't add an error if the user hasn't defined probabilities yet, just skip.
+            return;
+        }
+        
+        modelFit.push({
+            modelName: model.name,
+            hellingerDistance: calculateHellingerDistance(empiricalJointPMF, parsedModelPMF),
+            jensenShannonDistance: calculateJensenShannonDistance(empiricalJointPMF, parsedModelPMF),
+        });
+
+        // NOTE: Full theoretical metrics for single_vars, pairwise, etc. would be calculated here
+        // by marginalizing the parsedModelPMF and running the same metric functions.
+        // This is omitted for brevity but would be required for a full feature implementation.
+    });
     
     return { variables, single_vars, pairwise, modelFit, conditional, empiricalJointPMF };
 };
@@ -642,30 +681,46 @@ const calculateTPM = (
 };
 
 const calculateHellingerDistanceTPM = (tpm1: TPM, tpm2: TPM): number => {
+    // This function implements a direct, element-wise Hellinger distance between
+    // two matrices, as per the user's specified formula. It treats the TPMs as
+    // simple matrices of probabilities and compares them entry by entry.
+
+    // Step 1: Get all unique 'from' and 'to' states to define the full matrix shape.
+    // This ensures that if one TPM has a state/transition the other doesn't,
+    // it's treated as a probability of 0, making the matrices comparable.
     const fromStates = new Set([...tpm1.keys(), ...tpm2.keys()]);
-    if (fromStates.size === 0) return 0;
-    
-    let totalSquaredHellinger = 0;
-    
+    const toStates = new Set<string>();
     for (const fromState of fromStates) {
-        const dist1 = tpm1.get(fromState);
-        const dist2 = tpm2.get(fromState);
-        
-        const toStates = new Set([...(dist1?.keys() || []), ...(dist2?.keys() || [])]);
-        let sum = 0;
-        
-        for (const toState of toStates) {
-            const p1 = dist1?.get(toState) || 0;
-            const p2 = dist2?.get(toState) || 0;
-            sum += Math.pow(Math.sqrt(p1) - Math.sqrt(p2), 2);
-        }
-        
-        const h_dist_squared = sum / 2;
-        totalSquaredHellinger += h_dist_squared;
+        tpm1.get(fromState)?.forEach((_, toState) => toStates.add(toState));
+        tpm2.get(fromState)?.forEach((_, toState) => toStates.add(toState));
     }
-    
-    // Assumes uniform probability over from_states for weighting.
-    return Math.sqrt(totalSquaredHellinger / fromStates.size);
+    const sortedFromStates = [...fromStates].sort();
+    const sortedToStates = [...toStates].sort();
+
+    if (sortedFromStates.length === 0 || sortedToStates.length === 0) {
+        return 0;
+    }
+
+    // Step 2: Flatten the TPMs into single numeric arrays ('P' and 'Q'),
+    // ensuring a consistent order for a valid element-wise comparison.
+    const p: number[] = [];
+    const q: number[] = [];
+
+    for (const fromState of sortedFromStates) {
+        for (const toState of sortedToStates) {
+            p.push(tpm1.get(fromState)?.get(toState) || 0);
+            q.push(tpm2.get(fromState)?.get(toState) || 0);
+        }
+    }
+
+    // Step 3: Calculate the Hellinger distance using the formula:
+    // H = (1/sqrt(2)) * sqrt( sum( (sqrt(p_i) - sqrt(q_i))^2 ) )
+    let sumOfSquaredDiffs = 0;
+    for (let i = 0; i < p.length; i++) {
+        sumOfSquaredDiffs += Math.pow(Math.sqrt(p[i]) - Math.sqrt(q[i]), 2);
+    }
+
+    return (1 / Math.sqrt(2)) * Math.sqrt(sumOfSquaredDiffs);
 };
 
 const calculateEntropy = (dist: Map<string, number>, base: number): number => {
@@ -744,6 +799,10 @@ const runHomogeneityCheck = (tpms: {tpm: TPM, label: string}[]): { hellingerDist
 
     const gjsDivergence = calculateGJS_TPM(tpms.map(t => t.tpm));
     
+    // The conclusion of "isHomogeneous" is based on whether the calculated distances
+    // fall below a predefined threshold (here, 0.5). This threshold represents a
+    // practical tolerance for how much the system's rules can vary before we consider
+    // it non-homogeneous.
     const isHomogeneous = hellingerDistances.every(r => r.distance <= 0.5) && gjsDivergence <= 0.5;
 
     return { hellingerDistances, gjsDivergence, isHomogeneous };
@@ -751,22 +810,42 @@ const runHomogeneityCheck = (tpms: {tpm: TPM, label: string}[]): { hellingerDist
 
 
 export const performTimeSeriesAnalysis = (text: string): TimeSeriesAnalysisResults => {
+    // ############################################################################
+    // # DATA PREPARATION
+    // ############################################################################
+    // The first step is to parse the raw CSV-like text into a more usable format.
+    // The data is transposed so that each instance is a row, making it easier to
+    // process each time-series sequence individually.
+    // Example:
+    // Raw: Time,I1,I2 | Day1,A,B | Day2,A,C
+    // Becomes: instanceData = [ ['A', 'A'], ['B', 'C'] ]
+    //          timeLabels = ['Day1', 'Day2']
     const lines = text.trim().split('\n');
     const header = lines[0].split(',').map(h => h.trim());
     const dataRows = lines.slice(1);
 
     const timeLabels = dataRows.map(row => row.split(',')[0].trim());
-    const instanceData: string[][] = []; // numInstances x numTimeSteps
+    const instanceData: string[][] = []; // This will be structured as: numInstances x numTimeSteps
     const numInstances = header.length - 1;
     const numTimeSteps = timeLabels.length;
 
     for (let i = 0; i < numInstances; i++) {
         instanceData.push(dataRows.map(row => row.split(',')[i + 1].trim()));
     }
-
+    // We also determine the universe of all possible states (e.g., ['A', 'B', 'C']).
     const stateSpace = [...new Set(instanceData.flat())].sort();
 
-    // 1. Calculate all 1st-order TPMs: P(D_t | D_{t-1})
+    // ############################################################################
+    // # ALGORITHM 1: TIME HOMOGENEITY ANALYSIS
+    // ############################################################################
+    // The goal here is to determine if the transition probabilities are stable over time.
+    
+    // Step 1: Calculate a separate Transition Probability Matrix (TPM) for each time step.
+    // We loop from the second time step (t=1) to the end. For each step, we calculate
+    // P(State at time t | State at time t-1).
+    // For our dummy example (A/B data over 3 days), this loop runs twice:
+    //  - First, it calculates TPM for Day1 -> Day2.
+    //  - Second, it calculates TPM for Day2 -> Day3.
     const tpms_firstOrder: { tpm: TPM; label: string }[] = [];
     for (let t = 1; t < numTimeSteps; t++) {
         tpms_firstOrder.push({
@@ -775,28 +854,15 @@ export const performTimeSeriesAnalysis = (text: string): TimeSeriesAnalysisResul
         });
     }
     
-    // 2. Check for Time Homogeneity on 1st-order TPMs
+    // Step 2: Compare all the calculated TPMs to see how different they are.
+    // The `runHomogeneityCheck` function takes all the TPMs and calculates:
+    //  - Pairwise Hellinger Distances (e.g., distance between TPM1 and TPM2).
+    //  - A single Generalized Jensen-Shannon (GJS) Divergence for the whole set.
+    // Based on these distances, it returns a boolean `isHomogeneous`.
     const homogeneityCheck = runHomogeneityCheck(tpms_firstOrder);
-
-    // 3. Calculate all 2nd-order TPMs: P(D_t | D_{t-1}, D_{t-2})
-    const tpms_secondOrder: { tpm: TPM; label: string }[] = [];
-     for (let t = 2; t < numTimeSteps; t++) {
-        tpms_secondOrder.push({
-            tpm: calculateTPM(timeLabels, instanceData, stateSpace, t, 2),
-            label: `P(${timeLabels[t]}|${timeLabels[t-1]},${timeLabels[t-2]})`
-        });
-    }
-
-    // 4. Check for Markov property (as homogeneity of 2nd-order TPMs)
-    const markovianCheck = runHomogeneityCheck(tpms_secondOrder);
-
-    // 5. Calculate Full History TPM: P(D_n | D_{n-1}, ..., D_1)
-    const tpm_fullHistory = {
-        tpm: calculateTPM(timeLabels, instanceData, stateSpace, numTimeSteps - 1, numTimeSteps - 1),
-        label: `P(${timeLabels[numTimeSteps-1]}|...${timeLabels[0]})`
-    };
-
-    // 6. Calculate Average 1st-order TPM
+    
+    // Step 3: If the system is NOT homogeneous, it's useful to have a single "average" picture.
+    // We calculate the Time-Averaged TPM by averaging the probabilities from all individual TPMs.
     const allFromStates = new Set<string>();
     const allToStates = new Set<string>(stateSpace);
     tpms_firstOrder.forEach(({tpm}) => tpm.forEach((_, fromState) => allFromStates.add(fromState)));
@@ -814,33 +880,117 @@ export const performTimeSeriesAnalysis = (text: string): TimeSeriesAnalysisResul
         average_tpm.set(fromState, avgDist);
     }
     const average_tpm_firstOrder = { tpm: average_tpm, label: 'Average 1st Order TPM' };
+    
+    // ############################################################################
+    // # ALGORITHM 2: MARKOVIAN MODEL FIT ANALYSIS
+    // ############################################################################
+    // Here, we check if a "memoryless" (Markovian) model is a good fit for the data.
+    
+    // Step 1: Calculate the true joint probability distribution from the full history.
+    // We treat each instance's entire sequence (e.g., 'A,B,B') as a single outcome
+    // and calculate the probability of seeing that exact sequence based on its frequency.
+    const fullHistoryPMF: JointPMF = new Map();
+    for (let i = 0; i < numInstances; i++) {
+        const sequence = instanceData[i].join(',');
+        fullHistoryPMF.set(sequence, (fullHistoryPMF.get(sequence) || 0) + 1);
+    }
+    for (const [seq, count] of fullHistoryPMF.entries()) {
+        fullHistoryPMF.set(seq, count / numInstances);
+    }
 
-    // 7. Weak Stationarity Analysis (Mean and Variance over time)
+    // Step 2: Select the most representative TPM for our Markov model's transitions.
+    // If the process is homogeneous, the rules don't change, so we can just use the first TPM.
+    // If not, the time-averaged TPM is the best single representation of the "average" rule.
+    const representativeTPM = homogeneityCheck.isHomogeneous 
+        ? (tpms_firstOrder[0]?.tpm || new Map())
+        : average_tpm_firstOrder.tpm;
+
+    // Step 3: Calculate the initial state distribution P(X_1). This is simply the
+    // probability of starting in any given state, calculated from the first time step.
+    const initialStatePMF: JointPMF = new Map();
+    for(let i=0; i < numInstances; i++) {
+        const initialState = instanceData[i][0];
+        initialStatePMF.set(initialState, (initialStatePMF.get(initialState) || 0) + 1);
+    }
+    for(const [state, count] of initialStatePMF.entries()) {
+        initialStatePMF.set(state, count / numInstances);
+    }
+
+    // Step 4: Build the approximated joint probability distribution using the Markov chain rule:
+    // P(X_n,..,X_1) = P(X_1) * P(X_2|X_1) * ... * P(X_n|X_{n-1}).
+    // For each sequence from the true data, we calculate its probability under this simplified model.
+    const markovApproximationPMF: JointPMF = new Map();
+    for (const sequence of fullHistoryPMF.keys()) {
+        const states = sequence.split(',');
+        if (states.length === 0) continue;
+        
+        // Start with the probability of the first state.
+        let probability = initialStatePMF.get(states[0]) || 0;
+        
+        // Sequentially multiply by the transition probability for each subsequent step.
+        for (let t = 1; t < states.length; t++) {
+            const fromState = states[t-1];
+            const toState = states[t];
+            const transitionProb = representativeTPM.get(fromState)?.get(toState) || 0;
+            probability *= transitionProb;
+        }
+        markovApproximationPMF.set(sequence, probability);
+    }
+
+    // Step 5: Calculate the distance (Hellinger, JS) between the true distribution (fullHistoryPMF)
+    // and the Markovian approximation (markovApproximationPMF). A smaller distance implies a better fit.
+    const hellingerDistance = calculateHellingerDistance(fullHistoryPMF, markovApproximationPMF);
+    const jensenShannonDistance = calculateJensenShannonDistance(fullHistoryPMF, markovApproximationPMF);
+
+    const markovianFit = {
+        fullHistoryPMF,
+        markovApproximationPMF,
+        initialStatePMF,
+        hellingerDistance,
+        jensenShannonDistance,
+    };
+
+    // This is a higher-order TPM calculation, kept for potential future analysis but not used in the main report.
+    const tpm_fullHistory = {
+        tpm: calculateTPM(timeLabels, instanceData, stateSpace, numTimeSteps - 1, numTimeSteps - 1),
+        label: `P(${timeLabels[numTimeSteps-1]}|...${timeLabels[0]})`
+    };
+
+    // ############################################################################
+    // # ALGORITHM 3: WEAK STATIONARITY ANALYSIS
+    // ############################################################################
+    // The goal is to see if the mean and variance of the process are constant over time.
+    // This requires the data to be numerical.
     const weakStationarity = {
         mean: [] as number[],
         variance: [] as number[],
         timeLabels: timeLabels,
     };
+    // We iterate through each time step (column in the original data).
     for (let t = 0; t < numTimeSteps; t++) {
+        // Collect all numerical values at that specific time.
         const valuesAtTimeT = instanceData.map(instance => Number(instance[t])).filter(v => !isNaN(v));
         if (valuesAtTimeT.length > 0) {
+            // Calculate the mean and variance for that time step and store them.
             const mean = valuesAtTimeT.reduce((a, b) => a + b, 0) / valuesAtTimeT.length;
             const variance = valuesAtTimeT.length > 1 
-                ? valuesAtTimeT.reduce((a, v) => a + Math.pow(v - mean, 2), 0) / (valuesAtTimeT.length - 1)
+                ? valuesAtTimeT.reduce((a, v) => a + Math.pow(v - mean, 2), 0) / (valuesAtTimeT.length - 1) // Using sample variance
                 : 0;
             weakStationarity.mean.push(mean);
             weakStationarity.variance.push(variance);
         } else {
+            // Handle cases where data at a time step is non-numeric.
             weakStationarity.mean.push(NaN);
             weakStationarity.variance.push(NaN);
         }
     }
+    // These arrays of means and variances are then plotted in the UI.
     
+    // Finally, we return all the calculated results in a single object.
     return {
         isHomogeneous: homogeneityCheck.isHomogeneous,
         homogeneityMetrics: { hellingerDistances: homogeneityCheck.hellingerDistances, gjsDivergence: homogeneityCheck.gjsDivergence },
-        isMarkovian: markovianCheck.isHomogeneous,
-        markovianMetrics: { hellingerDistances: markovianCheck.hellingerDistances, gjsDivergence: markovianCheck.gjsDivergence },
+        markovianFit,
         tpms_firstOrder,
         tpm_fullHistory,
         average_tpm_firstOrder,

@@ -1,7 +1,5 @@
 import React from 'react';
-import { type RandomVariable } from '../types';
-// FIX: Import JointPMF from types.ts where it is defined and exported.
-import { type JointPMF } from '../types';
+import { type RandomVariable, type JointPMF } from '../types';
 
 interface JointDistributionTableProps {
     jointPMF: JointPMF;
@@ -13,7 +11,7 @@ const JointDistributionTable: React.FC<JointDistributionTableProps> = ({ jointPM
         return null;
     }
 
-    const sortedEntries = Array.from(jointPMF.entries()).sort((a, b) => b[1] - a[1]);
+    const sortedEntries = Array.from(jointPMF.entries()).sort((a, b) => a[0].localeCompare(b[0]));
 
     return (
         <div className="space-y-4 border-t border-gray-200 dark:border-gray-700 pt-6">

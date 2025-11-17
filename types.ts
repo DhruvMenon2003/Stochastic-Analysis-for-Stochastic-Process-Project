@@ -1,4 +1,5 @@
 
+
 export enum VariableType {
     Numerical = 'Numerical',
     Nominal = 'Nominal',
@@ -64,12 +65,12 @@ export interface PairwiseConditionalAnalysis {
 export type JointPMF = Map<string, number>;
 
 export interface AnalysisResults {
+    variables: RandomVariable[];
     single_vars: { [variableId: string]: SingleVarResults };
     pairwise: PairwiseResult[];
     modelFit: ModelFitResult[];
     conditional: { [pairKey: string]: PairwiseConditionalAnalysis };
     empiricalJointPMF: JointPMF;
-    variables: RandomVariable[];
 }
 
 export interface TheoreticalModel {
@@ -77,7 +78,7 @@ export interface TheoreticalModel {
     name: string;
     distribution: string;
     stateSpaces: { [varName: string]: string };
-    jointProbabilities: { [key: string]: string };
+    jointProbabilities: { [key: string]: string | number };
 }
 
 export interface ModelFitResult {
@@ -88,9 +89,7 @@ export interface ModelFitResult {
     error?: string;
 }
 
-// --- NEW TYPES FOR TIME SERIES ANALYSIS ---
-
-export type TPM = Map<string, Map<string, number>>; // from_state -> to_state -> probability
+export type TPM = Map<string, Map<string, number>>;
 
 export interface HellingerResult {
     pair: string;
@@ -103,10 +102,12 @@ export interface TimeSeriesAnalysisResults {
         hellingerDistances: HellingerResult[];
         gjsDivergence: number;
     };
-    isMarkovian: boolean;
-    markovianMetrics: {
-        hellingerDistances: HellingerResult[];
-        gjsDivergence: number;
+    markovianFit: {
+        fullHistoryPMF: JointPMF;
+        markovApproximationPMF: JointPMF;
+        initialStatePMF: JointPMF;
+        hellingerDistance: number;
+        jensenShannonDistance: number;
     };
     tpms_firstOrder: { tpm: TPM; label: string }[];
     tpm_fullHistory: { tpm: TPM; label: string };

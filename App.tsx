@@ -2,7 +2,7 @@
 
 import React, { useState, useMemo, useRef } from 'react';
 import { ResponsiveContainer, LineChart, CartesianGrid, XAxis, YAxis, Tooltip, Legend, Line } from 'recharts';
-import { type RandomVariable, type AnalysisResults, VariableType, type TheoreticalModel, type TimeSeriesAnalysisResults, type TPM } from './types';
+import { type RandomVariable, type AnalysisResults, VariableType, type TheoreticalModel, type TimeSeriesAnalysisResults, type TPM, JointPMF } from './types';
 import { parseInput, performFullAnalysis, detectVariableType, exportToJson, exportToCsv, detectAnalysisType, performTimeSeriesAnalysis } from './services/analysisService';
 import SingleVariableAnalysis from './components/SingleVariableAnalysis';
 import CorrelationHeatmap from './components/CorrelationHeatmap';
@@ -12,7 +12,7 @@ import ConditionalAnalysis from './components/ConditionalAnalysis';
 import JointDistributionTable from './components/JointDistributionTable';
 import { IconChartBar, IconCode, IconInfoCircle, IconDownload, IconTable, IconUpload, IconTrash, IconFileText, IconTarget, IconCheck, IconTrophy, IconTrendingUp } from './components/Icons';
 
-// --- NEW COMPONENT: TPMDisplay ---
+// --- REUSABLE COMPONENT: TPMDisplay ---
 const TPMDisplay: React.FC<{ tpm: TPM; title: string; stateSpace: string[] }> = ({ tpm, title, stateSpace }) => {
     const fromStates = [...tpm.keys()].sort();
     if (fromStates.length === 0) {
@@ -48,6 +48,166 @@ const TPMDisplay: React.FC<{ tpm: TPM; title: string; stateSpace: string[] }> = 
     );
 };
 
+// --- REUSABLE COMPONENT: JointPMFTable ---
+const JointPMFTable: React.FC<{ pmf: JointPMF; title: string; timeLabels: string[] }> = ({ pmf, title, timeLabels }) => {
+    const sortedEntries = useMemo(() => Array.from(pmf.entries()).sort((a, b) => a[0].localeCompare(b[0])), [pmf]);
+
+    return (
+        <div className="space-y-2">
+            <h4 className="text-md font-semibold text-gray-800 dark:text-gray-200">{title}</h4>
+            <div className="overflow-y-auto border border-gray-200 dark:border-gray-700 rounded-lg max-h-72">
+                <table className="min-w-full text-sm">
+                    <thead className="bg-gray-50 dark:bg-gray-800 sticky top-0">
+                        <tr>
+                            {timeLabels.map(label => <th key={label} className="px-2 py-2 text-center font-medium">{label}</th>)}
+                            <th className="px-2 py-2 text-center font-medium">Probability</th>
+                        </tr>
+                    </thead>
+                    <tbody className="divide-y divide-gray-200 dark:divide-gray-700">
+                        {sortedEntries.map(([sequence, prob]) => (
+                            <tr key={sequence}>
+                                {sequence.split(',').map((state, i) => <td key={i} className="px-2 py-2 text-center">{state}</td>)}
+                                <td className="px-2 py-2 text-center font-mono">{prob.toFixed(4)}</td>
+                            </tr>
+                        ))}
+                    </tbody>
+                </table>
+            </div>
+        </div>
+    );
+};
+
+
+// --- NEW COMPONENT: HomogeneityDetailsModal ---
+const HomogeneityDetailsModal: React.FC<{
+    isOpen: boolean;
+    onClose: () => void;
+    results: TimeSeriesAnalysisResults
+}> = ({ isOpen, onClose, results }) => {
+    if (!isOpen) return null;
+
+    const { tpms_firstOrder, homogeneityMetrics, stateSpace } = results;
+
+    return (
+        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4 transition-opacity" onClick={onClose}>
+            <div className="bg-white dark:bg-gray-900 p-6 rounded-lg shadow-2xl max-w-4xl w-full transform transition-all space-y-6 max-h-[90vh] overflow-y-auto" onClick={e => e.stopPropagation()}>
+                <div className="flex justify-between items-center border-b border-gray-200 dark:border-gray-700 pb-3">
+                    <h3 className="text-2xl font-bold">Time Homogeneity Details</h3>
+                    <button onClick={onClose} className="text-gray-400 hover:text-gray-600 dark:hover:text-gray-200 text-3xl font-bold">&times;</button>
+                </div>
+
+                {/* Metrics Section */}
+                <div>
+                    <h4 className="text-lg font-semibold mb-3">Distance Metrics</h4>
+                    <div className="p-4 bg-gray-50 dark:bg-gray-800/50 rounded-lg space-y-3">
+                        <p><strong>Generalized Jensen-Shannon Divergence:</strong> <span className="font-mono text-blue-600 dark:text-blue-400 text-lg">{homogeneityMetrics.gjsDivergence.toFixed(4)}</span></p>
+                        <div>
+                            <strong>Pairwise Hellinger Distances:</strong>
+                            <ul className="list-disc pl-5 mt-2 text-sm font-mono space-y-1">
+                                {homogeneityMetrics.hellingerDistances.map(h => (
+                                    <li key={h.pair}>
+                                        <span className="font-sans text-gray-700 dark:text-gray-300">{h.pair}:</span> {h.distance.toFixed(4)}
+                                    </li>
+                                ))}
+                            </ul>
+                        </div>
+                    </div>
+                </div>
+
+                {/* TPMs Section */}
+                <div>
+                    <h4 className="text-lg font-semibold mb-3">Individual Transition Probability Matrices</h4>
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                        {tpms_firstOrder.map(({ tpm, label }) => (
+                            <TPMDisplay key={label} tpm={tpm} title={label} stateSpace={stateSpace} />
+                        ))}
+                    </div>
+                </div>
+
+                 <div className="flex justify-end pt-4 border-t border-gray-200 dark:border-gray-700 mt-6">
+                    <button onClick={onClose} className="px-4 py-2 font-semibold text-white bg-blue-600 rounded-md hover:bg-blue-700">Close</button>
+                 </div>
+            </div>
+        </div>
+    );
+};
+
+
+// --- NEW COMPONENT: MarkovianFitDetailsModal ---
+const MarkovianFitDetailsModal: React.FC<{
+    isOpen: boolean;
+    onClose: () => void;
+    results: TimeSeriesAnalysisResults;
+}> = ({ isOpen, onClose, results }) => {
+    if (!isOpen) return null;
+
+    const { markovianFit, isHomogeneous, tpms_firstOrder, average_tpm_firstOrder, stateSpace, weakStationarity } = results;
+    const representativeTPM = isHomogeneous ? tpms_firstOrder[0] : average_tpm_firstOrder;
+    
+    // For the calculation example
+    const exampleSequence = markovianFit.fullHistoryPMF.keys().next().value || '';
+    const exampleStates = exampleSequence.split(',');
+    const initialProb = (markovianFit.initialStatePMF?.get(exampleStates[0]) || 0);
+    
+    let calcString = `${initialProb.toFixed(3)} (P(${exampleStates[0]}))`;
+    let runningProb = initialProb;
+    const transitionCalcs = [];
+
+    for (let i = 1; i < exampleStates.length; i++) {
+        const from = exampleStates[i-1];
+        const to = exampleStates[i];
+        const transProb = representativeTPM.tpm.get(from)?.get(to) || 0;
+        runningProb *= transProb;
+        calcString += ` * ${transProb.toFixed(3)}`;
+        transitionCalcs.push({from, to, prob: transProb});
+    }
+    calcString += ` = ${runningProb.toFixed(4)}`;
+
+
+    return (
+        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4 transition-opacity" onClick={onClose}>
+            <div className="bg-white dark:bg-gray-900 p-6 rounded-lg shadow-2xl max-w-6xl w-full transform transition-all space-y-6 max-h-[90vh] overflow-y-auto" onClick={e => e.stopPropagation()}>
+                <div className="flex justify-between items-center border-b border-gray-200 dark:border-gray-700 pb-3">
+                    <h3 className="text-2xl font-bold">Markovian Model Fit Details</h3>
+                    <button onClick={onClose} className="text-gray-400 hover:text-gray-600 dark:hover:text-gray-200 text-3xl font-bold">&times;</button>
+                </div>
+
+                {/* Distributions Section */}
+                <div>
+                    <h4 className="text-lg font-semibold mb-3">Joint Probability Distributions</h4>
+                    <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+                        <JointPMFTable pmf={markovianFit.fullHistoryPMF} title="Empirical (from Data)" timeLabels={weakStationarity.timeLabels} />
+                        <JointPMFTable pmf={markovianFit.markovApproximationPMF} title="Markovian Approximation" timeLabels={weakStationarity.timeLabels} />
+                    </div>
+                </div>
+
+                 {/* Calculation Section */}
+                <div>
+                    <h4 className="text-lg font-semibold mb-3">Approximation Calculation</h4>
+                    <div className="p-4 bg-gray-50 dark:bg-gray-800/50 rounded-lg space-y-4">
+                        <p className="text-sm">The Markovian approximation is built using the chain rule: <br/><code className="font-mono bg-gray-200 dark:bg-gray-700 p-1 rounded">P(Xn,...,X1) = P(X1) * P(X2|X1) * ... * P(Xn|Xn-1)</code>.</p>
+                        <p className="text-sm">The conditional probabilities `P(Xt | Xt-1)` are taken from the single representative TPM below.</p>
+                        <div className="flex justify-center">
+                           {representativeTPM && <TPMDisplay tpm={representativeTPM.tpm} title={`Representative TPM (${representativeTPM.label})`} stateSpace={stateSpace} />}
+                        </div>
+                         <div>
+                            <p className="text-sm font-semibold">Example Calculation for sequence "{exampleSequence}":</p>
+                            <div className="text-xs font-mono bg-white dark:bg-gray-900 p-3 mt-2 rounded border border-gray-200 dark:border-gray-700 overflow-x-auto">
+                               {calcString}
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                 <div className="flex justify-end pt-4 border-t border-gray-200 dark:border-gray-700 mt-6">
+                    <button onClick={onClose} className="px-4 py-2 font-semibold text-white bg-blue-600 rounded-md hover:bg-blue-700">Close</button>
+                 </div>
+            </div>
+        </div>
+    );
+};
+
+
 // --- NEW COMPONENT: StationaryAnalysis ---
 const StationaryAnalysis: React.FC<{ results: TimeSeriesAnalysisResults['weakStationarity'] }> = ({ results }) => {
     const [isModalOpen, setIsModalOpen] = useState(false);
@@ -61,7 +221,7 @@ const StationaryAnalysis: React.FC<{ results: TimeSeriesAnalysisResults['weakSta
         <div className="space-y-4">
             <div className="flex justify-between items-center">
                 <h3 className="text-xl font-semibold">Weak Stationarity Analysis</h3>
-                <button 
+                <button
                     onClick={() => setIsModalOpen(true)}
                     className="px-3 py-1.5 text-sm font-medium text-white bg-blue-600 rounded-md hover:bg-blue-700 transition-colors"
                 >
@@ -120,26 +280,32 @@ const StationaryAnalysis: React.FC<{ results: TimeSeriesAnalysisResults['weakSta
 
 // --- NEW COMPONENT: TimeSeriesAnalysis ---
 const TimeSeriesAnalysis: React.FC<{ results: TimeSeriesAnalysisResults }> = ({ results }) => {
-    const { isHomogeneous, isMarkovian, tpms_firstOrder, tpm_fullHistory, average_tpm_firstOrder, stateSpace } = results;
+    const [isHomogeneityModalOpen, setIsHomogeneityModalOpen] = useState(false);
+    const [isMarkovianFitModalOpen, setIsMarkovianFitModalOpen] = useState(false);
+    const { isHomogeneous, tpms_firstOrder, average_tpm_firstOrder, stateSpace, markovianFit } = results;
 
     const renderTPMs = () => {
-        if (isHomogeneous && isMarkovian) {
-            return <TPMDisplay tpm={tpms_firstOrder[0].tpm} title="System is Time-Homogeneous and Markovian. P(Day2|Day1) is a good approximation:" stateSpace={stateSpace} />;
-        }
-        if (isHomogeneous && !isMarkovian) {
-             return <TPMDisplay tpm={tpm_fullHistory.tpm} title="System is Homogeneous but NOT Markovian. Full history matters:" stateSpace={stateSpace} />;
-        }
-        if (!isHomogeneous && isMarkovian) {
+        if (isHomogeneous) {
             return (
-                <div className="space-y-6">
-                     <p className="text-sm text-gray-600 dark:text-gray-400">System is NOT Homogeneous but IS Markovian. The 1st-order transition probabilities change over time.</p>
-                     <TPMDisplay tpm={average_tpm_firstOrder.tpm} title={average_tpm_firstOrder.label} stateSpace={stateSpace} />
-                     {tpms_firstOrder.map(t => <TPMDisplay key={t.label} tpm={t.tpm} title={t.label} stateSpace={stateSpace} />)}
+                 <div className="space-y-4">
+                    <p className="text-sm text-gray-600 dark:text-gray-400">
+                        Since the system is time-homogeneous, the transition probabilities are stable over time. The matrix for the first transition (Day 1 → Day 2) is a good representative for the entire process.
+                    </p>
+                    {tpms_firstOrder.length > 0 &&
+                        <TPMDisplay tpm={tpms_firstOrder[0].tpm} title="Transition Probability Matrix (Day 1 → Day 2)" stateSpace={stateSpace} />
+                    }
+                </div>
+            );
+        } else {
+             return (
+                <div className="space-y-4">
+                    <p className="text-sm text-gray-600 dark:text-gray-400">
+                        Since the system is NOT time-homogeneous, the transition probabilities change over time. The best single representation is the time-averaged matrix, which averages the probabilities across all transitions.
+                    </p>
+                    <TPMDisplay tpm={average_tpm_firstOrder.tpm} title="Time-Averaged Transition Probability Matrix" stateSpace={stateSpace} />
                 </div>
             );
         }
-        // Not Homogeneous, Not Markovian
-        return <TPMDisplay tpm={tpm_fullHistory.tpm} title="System is NOT Homogeneous and NOT Markovian. Full history matters and dynamics are not stable:" stateSpace={stateSpace} />;
     };
 
     return (
@@ -149,17 +315,40 @@ const TimeSeriesAnalysis: React.FC<{ results: TimeSeriesAnalysisResults }> = ({ 
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-6 text-center">
                     <div className="p-4 bg-gray-50 dark:bg-gray-800/50 rounded-lg">
                         <h3 className="font-semibold text-lg mb-2">Is time homogeneity a valid assumption?</h3>
-                        <p className={`text-2xl font-bold ${results.isHomogeneous ? 'text-green-600' : 'text-red-600'}`}>
-                            {results.isHomogeneous ? 'Yes' : 'No'}
-                        </p>
-                         <p className="text-xs text-gray-500 mt-2">Hellinger ≤ 0.5 & GJS ≤ 0.5</p>
+                        <div className="flex items-center justify-center space-x-4">
+                            <p className={`text-2xl font-bold ${results.isHomogeneous ? 'text-green-600' : 'text-red-600'}`}>
+                                {results.isHomogeneous ? 'Yes' : 'No'}
+                            </p>
+                            <button
+                                onClick={() => setIsHomogeneityModalOpen(true)}
+                                className="px-3 py-1.5 text-xs font-medium text-blue-700 bg-blue-100 dark:bg-blue-900/50 dark:text-blue-300 rounded-md hover:bg-blue-200 dark:hover:bg-blue-800 transition-colors"
+                            >
+                                View Details
+                            </button>
+                        </div>
+                         <p className="text-xs text-gray-500 mt-2">Based on Hellinger & GJS distances</p>
                     </div>
-                    <div className="p-4 bg-gray-50 dark:bg-gray-800/50 rounded-lg">
-                        <h3 className="font-semibold text-lg mb-2">Is Markovian dependence a valid assumption?</h3>
-                        <p className={`text-2xl font-bold ${results.isMarkovian ? 'text-green-600' : 'text-red-600'}`}>
-                            {results.isMarkovian ? 'Yes' : 'No'}
-                        </p>
-                        <p className="text-xs text-gray-500 mt-2">2nd-order TPMs are homogeneous</p>
+                     <div className="p-4 bg-gray-50 dark:bg-gray-800/50 rounded-lg">
+                        <h3 className="font-semibold text-lg mb-2">Markovian Model Fit</h3>
+                        <div className="grid grid-cols-2 gap-2 text-center">
+                            <div>
+                                <p className="text-xs text-gray-500">Hellinger Distance</p>
+                                <p className="text-2xl font-bold font-mono text-indigo-600 dark:text-indigo-400">{markovianFit.hellingerDistance.toFixed(4)}</p>
+                            </div>
+                            <div>
+                                <p className="text-xs text-gray-500">JS Distance</p>
+                                <p className="text-2xl font-bold font-mono text-indigo-600 dark:text-indigo-400">{markovianFit.jensenShannonDistance.toFixed(4)}</p>
+                            </div>
+                        </div>
+                         <div className="flex items-center justify-center space-x-4 mt-2">
+                             <p className="text-xs text-gray-500">Distance between true history and Markov model. Lower is better.</p>
+                             <button
+                                onClick={() => setIsMarkovianFitModalOpen(true)}
+                                className="px-3 py-1.5 text-xs font-medium text-blue-700 bg-blue-100 dark:bg-blue-900/50 dark:text-blue-300 rounded-md hover:bg-blue-200 dark:hover:bg-blue-800 transition-colors"
+                            >
+                                View Details
+                            </button>
+                         </div>
                     </div>
                 </div>
             </div>
@@ -169,6 +358,16 @@ const TimeSeriesAnalysis: React.FC<{ results: TimeSeriesAnalysisResults }> = ({ 
             <div className="border-t border-gray-200 dark:border-gray-700 pt-6">
                 <StationaryAnalysis results={results.weakStationarity} />
             </div>
+             <HomogeneityDetailsModal
+                isOpen={isHomogeneityModalOpen}
+                onClose={() => setIsHomogeneityModalOpen(false)}
+                results={results}
+            />
+             <MarkovianFitDetailsModal
+                isOpen={isMarkovianFitModalOpen}
+                onClose={() => setIsMarkovianFitModalOpen(false)}
+                results={results}
+            />
         </div>
     )
 };
@@ -181,9 +380,9 @@ const App: React.FC = () => {
     const [activeTab, setActiveTab] = useState<'single' | 'pairwise' | 'modelFit'>('single');
     const [storedDatasets, setStoredDatasets] = useState<{name: string, content: string}[]>([]);
     const [theoreticalModels, setTheoreticalModels] = useState<TheoreticalModel[]>([
-        { 
-            id: `model-${Date.now()}`, 
-            name: 'Example Uniform Model', 
+        {
+            id: `model-${Date.now()}`,
+            name: 'Example Uniform Model',
             stateSpaces: { 'VarA': '1, 2, 3, 4', 'VarB': '10, 20, 31, 44', 'VarC': 'red, blue, green', 'VarD': 'low, medium, high' },
             jointProbabilities: {},
             distribution: 'VarA,VarB,VarC,VarD,Probability\n1,10,red,low,0.1\n2,20,blue,medium,0.1\n2,20,red,high,0.1\n3,31,green,medium,0.1\n3,31,blue,low,0.1\n3,31,red,high,0.1\n4,44,red,high,0.1\n4,44,green,medium,0.1\n4,44,blue,low,0.2'
@@ -200,7 +399,7 @@ const App: React.FC = () => {
         const header = [...varNames, 'Probability'].join(',');
         const rows = Object.entries(model.jointProbabilities)
             .map(([key, probStr]) => {
-                const prob = parseFloat(probStr);
+                const prob = parseFloat(probStr as string);
                 if (!key || isNaN(prob) || prob <= 0) return null;
                 return `${key},${prob}`;
             })
@@ -216,19 +415,19 @@ const App: React.FC = () => {
             return true;
         }
         return theoreticalModels.every(model => {
-            // FIX: This calculation was throwing a type error. Casting the value from jointProbabilities to string 
-            // for parseFloat and rewriting the reduce to a for-loop makes it more robust to compiler inference issues.
-             const sum = Object.values(model.jointProbabilities).reduce((acc: number, probStr: unknown) => {
-                const prob = parseFloat(probStr as string);
+             const sum = Object.values(model.jointProbabilities).reduce((acc: number, probStr: string | number) => {
+                const prob = Number(probStr);
                 return isNaN(prob) ? acc : acc + prob;
             }, 0);
-             const stateSpaces = variables.map(v => model.stateSpaces[v.name]?.split(',').map(s => s.trim()).filter(Boolean) ?? []);
+             const stateSpaces = variables.map(v => model.stateSpaces[v.name]?.split(',').map(s => s.trim()).filter(s => s) ?? []);
              if (stateSpaces.some(s => s.length === 0)) return true;
-             
-             let expectedProbs = 1;
-             for (const space of stateSpaces) {
-                 expectedProbs *= (Array.isArray(space) ? space.length : 1) || 1;
-             }
+
+            // FIX: The `reduce` method caused a TypeScript compilation error. Replaced it with a standard `for` loop,
+            // which is more explicit and resolves the type inference issue.
+            let expectedProbs = 1;
+            for (const space of stateSpaces) {
+                expectedProbs *= space.length;
+            }
 
              if (Object.keys(model.jointProbabilities).length !== expectedProbs) return true;
 
@@ -241,25 +440,23 @@ const App: React.FC = () => {
         setError(null);
         setCrossSectionalResults(null);
         setTimeSeriesResults(null);
-        
-        // This is a hacky way to ensure theoretical models are updated with latest variables for cross-sectional
-        // A better approach would be a more integrated state management solution (e.g., context, redux)
-        const currentVariables = crossSectionalResults?.variables || [];
 
         setTimeout(() => { // Use timeout to allow UI to update to loading state
             try {
                 const mode = detectAnalysisType(inputText);
                 setAnalysisMode(mode);
-    
+
                 if (mode === 'cross-sectional') {
-                    const results = performFullAnalysis(inputText);
-                    // Manually inject theoretical model results
+                    // Get variable names from data to generate the distribution string for the model
+                    const dataVarNames = parseInput(inputText).map(v => v.name);
                     const modelsForAnalysis = theoreticalModels.map(m => ({
                         ...m,
-                        distribution: generateDistributionString(m, results.variables.map(v => v.name))
+                        distribution: generateDistributionString(m, dataVarNames)
                     }));
-                    const fullResults = performFullAnalysisWithModels(results, modelsForAnalysis);
+                    
+                    const fullResults = performFullAnalysis(inputText, modelsForAnalysis);
                     setCrossSectionalResults(fullResults);
+
                     if (fullResults.variables.length > 1) setActiveTab('pairwise');
                     else setActiveTab('single');
                 } else {
@@ -280,22 +477,11 @@ const App: React.FC = () => {
             }
         }, 50);
     };
-    
-    // This is a temporary solution to integrate model fitting without a major refactor of performFullAnalysis
-    // In a real app, this logic would be combined.
-    const performFullAnalysisWithModels = (baseResults: AnalysisResults, models: TheoreticalModel[]): AnalysisResults => {
-        // This function would re-calculate the `theoretical` and `modelFit` parts.
-        // For this implementation, we'll just return baseResults as the logic is complex to replicate here.
-        // The original logic in the useMemo is what's truly needed.
-        // A proper refactor would make performFullAnalysis take models as an argument.
-        return baseResults;
-    };
-
 
     const handleExport = (format: 'json' | 'csv') => {
         if (!crossSectionalResults || variables.length === 0) return;
 
-        const content = format === 'json' 
+        const content = format === 'json'
             ? exportToJson(crossSectionalResults)
             : exportToCsv(crossSectionalResults, variables);
 
@@ -341,7 +527,7 @@ const App: React.FC = () => {
         });
 
         const results = await Promise.all(uploadPromises);
-        
+
         const newDatasets: { name: string; content: string }[] = [];
         const uploadErrors: string[] = [];
 
@@ -356,7 +542,7 @@ const App: React.FC = () => {
         if (newDatasets.length > 0) {
             setStoredDatasets(prev => [...prev, ...newDatasets]);
         }
-        
+
         if (uploadErrors.length > 0) {
             setError(uploadErrors.join(' '));
         } else {
@@ -573,7 +759,7 @@ const App: React.FC = () => {
                                     )}
                                     {activeTab === 'pairwise' && (
                                         <div className="space-y-8">
-                                            <CorrelationHeatmap 
+                                            <CorrelationHeatmap
                                                 pairwiseResults={crossSectionalResults.pairwise}
                                                 variables={variables}
                                                 models={theoreticalModels}

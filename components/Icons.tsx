@@ -70,7 +70,6 @@ export const IconTrendingUp: React.FC<IconProps> = ({ className }) => (
 );
 
 
-// FIX: Replaced invalid `title` attribute on SVG with a nested <title> element for accessibility.
 export const IconCheck: React.FC<IconProps> = ({ className, title }) => (
     <svg xmlns="http://www.w3.org/2000/svg" className={className} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="3">
         {title && <title>{title}</title>}
@@ -78,7 +77,6 @@ export const IconCheck: React.FC<IconProps> = ({ className, title }) => (
     </svg>
 );
 
-// FIX: Replaced invalid `title` attribute on SVG with a nested <title> element for accessibility.
 export const IconTrophy: React.FC<IconProps> = ({ className, title }) => (
     <svg xmlns="http://www.w3.org/2000/svg" className={className} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="2">
         {title && <title>{title}</title>}

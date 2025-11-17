@@ -60,8 +60,7 @@ const TheoreticalModelInput: React.FC<TheoreticalModelInputProps> = ({ model, va
         
         let probabilitySum = 0;
         Object.values(model.jointProbabilities).forEach(probStr => {
-            // FIX: Argument of type 'unknown' is not assignable to parameter of type 'string'. Cast to string.
-            const prob = parseFloat(probStr as string);
+            const prob = Number(probStr);
             if (!isNaN(prob)) {
                 probabilitySum += prob;
             }
