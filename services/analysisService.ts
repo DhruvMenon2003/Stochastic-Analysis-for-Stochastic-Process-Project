@@ -513,7 +513,7 @@ export const exportToCsv = (results: AnalysisResults, variables: RandomVariable[
     return csv;
 };
 
-export const performFullAnalysis = (inputText: string, theoreticalModels: TheoreticalModel[] = []): AnalysisResults => {
+export const performFullAnalysis = (inputText: string): AnalysisResults => {
     const parsedData = parseInput(inputText);
     if (parsedData.length === 0 || parsedData[0].data.length === 0) {
         throw new Error("No data found. Please ensure the input has a header and data rows.");
@@ -531,7 +531,8 @@ export const performFullAnalysis = (inputText: string, theoreticalModels: Theore
     }
     
     const numVars = variables.length;
-    
+    const varMap = new Map(variables.map((v, i) => [v.id, { ...v, index: i }]));
+
     // --- EMPIRICAL ANALYSIS ---
     const empiricalJointPMF = getEmpiricalJointPMF(variables);
     const single_vars: { [variableId: string]: SingleVarResults } = {};
@@ -576,33 +577,8 @@ export const performFullAnalysis = (inputText: string, theoreticalModels: Theore
         }
     }
     
-    // --- THEORETICAL & MODEL FIT ANALYSIS ---
+    // --- THEORETICAL & MODEL FIT ANALYSIS (Placeholder, as models are UI-driven) ---
     const modelFit: ModelFitResult[] = [];
-    const varNamesInOrder = variables.map(v => v.name);
-
-    theoreticalModels.forEach(model => {
-        const parsedModelPMF = parseTheoreticalModel(model, varNamesInOrder);
-        
-        if (typeof parsedModelPMF === 'string') {
-            modelFit.push({ modelName: model.name, error: parsedModelPMF });
-            return;
-        }
-
-        if (parsedModelPMF.size === 0) {
-            // Don't add an error if the user hasn't defined probabilities yet, just skip.
-            return;
-        }
-        
-        modelFit.push({
-            modelName: model.name,
-            hellingerDistance: calculateHellingerDistance(empiricalJointPMF, parsedModelPMF),
-            jensenShannonDistance: calculateJensenShannonDistance(empiricalJointPMF, parsedModelPMF),
-        });
-
-        // NOTE: Full theoretical metrics for single_vars, pairwise, etc. would be calculated here
-        // by marginalizing the parsedModelPMF and running the same metric functions.
-        // This is omitted for brevity but would be required for a full feature implementation.
-    });
     
     return { variables, single_vars, pairwise, modelFit, conditional, empiricalJointPMF };
 };
