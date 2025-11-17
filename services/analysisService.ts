@@ -433,22 +433,43 @@ const calculateJensenShannonDistance = (pmf1: JointPMF, pmf2: JointPMF): number 
 
 // --- EXPORTED API ---
 
+export const createDistributionStringFromModel = (model: TheoreticalModel, varNames: string[]): string => {
+    if (varNames.length === 0) return '';
+    const header = [...varNames, 'Probability'].join(',');
+    const rows = Object.entries(model.jointProbabilities)
+        .map(([key, probStr]) => {
+            const prob = parseFloat(probStr as string);
+            if (!key || isNaN(prob) || prob <= 0) return null;
+            return `${key},${prob}`;
+        })
+        .filter(Boolean);
+
+    return [header, ...rows].join('\n');
+};
+
 export const parseInput = (text: string): { name: string; data: string[] }[] => {
     const lines = text.trim().split('\n').filter(line => line.trim() !== '');
-    if (lines.length < 2) return [];
+    if (lines.length < 2) {
+        throw new Error("Input data must contain a header row and at least one data row.");
+    }
 
     const header = lines[0].split(',').map(h => h.trim());
+    const headerLength = header.length;
+    if (headerLength === 0) {
+        throw new Error("Header row is empty or invalid.");
+    }
+    
     const dataRows = lines.slice(1);
-
     const variables: { name: string; data: string[] }[] = header.map(name => ({ name, data: [] }));
 
-    dataRows.forEach(row => {
+    dataRows.forEach((row, rowIndex) => {
         const values = row.split(',').map(v => v.trim());
-        if (values.length === header.length) {
-            values.forEach((value, index) => {
-                if (variables[index]) variables[index].data.push(value);
-            });
+        if (values.length !== headerLength) {
+            throw new Error(`Data row ${rowIndex + 1} has ${values.length} columns, but header has ${headerLength}. All rows must have the same number of columns.`);
         }
+        values.forEach((value, index) => {
+            if (variables[index]) variables[index].data.push(value);
+        });
     });
 
     return variables.filter(v => v.name);
@@ -555,19 +576,7 @@ export const exportToCsv = (results: AnalysisResults, variables: RandomVariable[
     return csv;
 };
 
-export const performFullAnalysis = (inputText: string, theoreticalModels: TheoreticalModel[] = []): AnalysisResults => {
-    const parsedData = parseInput(inputText);
-    if (parsedData.length === 0 || parsedData[0].data.length === 0) {
-        throw new Error("No data found. Please ensure the input has a header and data rows.");
-    }
-     const variables: RandomVariable[] = parsedData.map((v, i) => ({
-        id: `var-${i}-${Date.now()}`,
-        name: v.name,
-        data: v.data,
-        type: detectVariableType(v.data),
-        ordinalOrder: [],
-    }));
-
+export const performFullAnalysis = (variables: RandomVariable[], theoreticalModels: TheoreticalModel[] = []): AnalysisResults => {
     if (variables.length === 0 || variables[0]?.data.length === 0) {
         throw new Error("Cannot perform analysis on empty dataset.");
     }
@@ -969,6 +978,9 @@ const runHomogeneityCheck = (tpms: {tpm: TPM, label: string}[]): { hellingerDist
 
     const gjsDivergence = calculateGJS_TPM_normalized(tpms.map(t => t.tpm));
     
+    // NOTE: The 0.5 threshold for homogeneity is a heuristic. For rigorous scientific
+    // applications, this might be replaced with a formal statistical test (e.g., Chi-squared test)
+    // or a user-configurable sensitivity level.
     const isHomogeneous = hellingerDistances.every(r => r.distance <= 0.5) && gjsDivergence <= 0.5;
 
     return { hellingerDistances, gjsDivergence, isHomogeneous };

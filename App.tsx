@@ -1,376 +1,16 @@
 
 
 import React, { useState, useMemo, useRef } from 'react';
-import { ResponsiveContainer, LineChart, CartesianGrid, XAxis, YAxis, Tooltip, Legend, Line } from 'recharts';
-import { type RandomVariable, type AnalysisResults, VariableType, type TheoreticalModel, type TimeSeriesAnalysisResults, type TPM, JointPMF } from './types';
-import { parseInput, performFullAnalysis, detectVariableType, exportToJson, exportToCsv, detectAnalysisType, performTimeSeriesAnalysis } from './services/analysisService';
+import { type RandomVariable, type AnalysisResults, VariableType, type TheoreticalModel, type TimeSeriesAnalysisResults } from './types';
+import { parseInput, performFullAnalysis, detectVariableType, exportToJson, exportToCsv, detectAnalysisType, performTimeSeriesAnalysis, createDistributionStringFromModel } from './services/analysisService';
 import SingleVariableAnalysis from './components/SingleVariableAnalysis';
 import CorrelationHeatmap from './components/CorrelationHeatmap';
 import ModelFitResults from './components/ModelFitResults';
 import TheoreticalModelInput from './components/TheoreticalModelInput';
 import ConditionalAnalysis from './components/ConditionalAnalysis';
 import JointDistributionTable from './components/JointDistributionTable';
-import { IconChartBar, IconCode, IconInfoCircle, IconDownload, IconTable, IconUpload, IconTrash, IconFileText, IconTarget, IconCheck, IconTrophy, IconTrendingUp } from './components/Icons';
-
-// --- REUSABLE COMPONENT: TPMDisplay ---
-const TPMDisplay: React.FC<{ tpm: TPM; title: string; stateSpace: string[] }> = ({ tpm, title, stateSpace }) => {
-    const fromStates = [...tpm.keys()].sort();
-    if (fromStates.length === 0) {
-        return <div className="p-4 bg-gray-50 dark:bg-gray-800/50 rounded-md"><h4 className="font-semibold">{title}</h4><p className="text-sm text-gray-500 italic">Not enough data to compute this matrix.</p></div>
-    }
-
-    return (
-        <div className="space-y-2">
-            <h4 className="text-md font-semibold text-gray-800 dark:text-gray-200">{title}</h4>
-            <div className="overflow-x-auto border border-gray-200 dark:border-gray-700 rounded-lg">
-                <table className="min-w-full text-sm">
-                    <thead className="bg-gray-50 dark:bg-gray-800">
-                        <tr>
-                            <th className="sticky left-0 bg-gray-50 dark:bg-gray-800 px-2 py-2 text-left font-medium">From ↓ To →</th>
-                            {stateSpace.map(s => <th key={s} className="px-2 py-2 text-center font-medium">{s}</th>)}
-                        </tr>
-                    </thead>
-                    <tbody className="divide-y divide-gray-200 dark:divide-gray-700">
-                        {fromStates.map(fromState => (
-                            <tr key={fromState}>
-                                <td className="sticky left-0 bg-white dark:bg-gray-900 px-2 py-2 font-medium">{fromState}</td>
-                                {stateSpace.map(toState => (
-                                    <td key={toState} className="px-2 py-2 text-center font-mono">
-                                        {(tpm.get(fromState)?.get(toState) || 0).toFixed(3)}
-                                    </td>
-                                ))}
-                            </tr>
-                        ))}
-                    </tbody>
-                </table>
-            </div>
-        </div>
-    );
-};
-
-// --- REUSABLE COMPONENT: JointPMFTable ---
-const JointPMFTable: React.FC<{ pmf: JointPMF; title: string; timeLabels: string[] }> = ({ pmf, title, timeLabels }) => {
-    const sortedEntries = useMemo(() => Array.from(pmf.entries()).sort((a, b) => a[0].localeCompare(b[0])), [pmf]);
-
-    return (
-        <div className="space-y-2">
-            <h4 className="text-md font-semibold text-gray-800 dark:text-gray-200">{title}</h4>
-            <div className="overflow-y-auto border border-gray-200 dark:border-gray-700 rounded-lg max-h-72">
-                <table className="min-w-full text-sm">
-                    <thead className="bg-gray-50 dark:bg-gray-800 sticky top-0">
-                        <tr>
-                            {timeLabels.map(label => <th key={label} className="px-2 py-2 text-center font-medium">{label}</th>)}
-                            <th className="px-2 py-2 text-center font-medium">Probability</th>
-                        </tr>
-                    </thead>
-                    <tbody className="divide-y divide-gray-200 dark:divide-gray-700">
-                        {sortedEntries.map(([sequence, prob]) => (
-                            <tr key={sequence}>
-                                {sequence.split(',').map((state, i) => <td key={i} className="px-2 py-2 text-center">{state}</td>)}
-                                <td className="px-2 py-2 text-center font-mono">{prob.toFixed(4)}</td>
-                            </tr>
-                        ))}
-                    </tbody>
-                </table>
-            </div>
-        </div>
-    );
-};
-
-
-// --- NEW COMPONENT: HomogeneityDetailsModal ---
-const HomogeneityDetailsModal: React.FC<{
-    isOpen: boolean;
-    onClose: () => void;
-    results: TimeSeriesAnalysisResults
-}> = ({ isOpen, onClose, results }) => {
-    if (!isOpen) return null;
-
-    const { tpms_firstOrder, homogeneityMetrics, stateSpace } = results;
-
-    return (
-        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4 transition-opacity" onClick={onClose}>
-            <div className="bg-white dark:bg-gray-900 p-6 rounded-lg shadow-2xl max-w-4xl w-full transform transition-all space-y-6 max-h-[90vh] overflow-y-auto" onClick={e => e.stopPropagation()}>
-                <div className="flex justify-between items-center border-b border-gray-200 dark:border-gray-700 pb-3">
-                    <h3 className="text-2xl font-bold">Time Homogeneity Details</h3>
-                    <button onClick={onClose} className="text-gray-400 hover:text-gray-600 dark:hover:text-gray-200 text-3xl font-bold">&times;</button>
-                </div>
-
-                {/* Metrics Section */}
-                <div>
-                    <h4 className="text-lg font-semibold mb-3">Distance Metrics</h4>
-                    <div className="p-4 bg-gray-50 dark:bg-gray-800/50 rounded-lg space-y-3">
-                        <p><strong>Generalized Jensen-Shannon Divergence (Normalized):</strong> <span className="font-mono text-blue-600 dark:text-blue-400 text-lg">{homogeneityMetrics.gjsDivergence.toFixed(4)}</span></p>
-                        <div>
-                            <strong>Pairwise Hellinger Distances:</strong>
-                            <ul className="list-disc pl-5 mt-2 text-sm font-mono space-y-1">
-                                {homogeneityMetrics.hellingerDistances.map(h => (
-                                    <li key={h.pair}>
-                                        <span className="font-sans text-gray-700 dark:text-gray-300">{h.pair}:</span> {h.distance.toFixed(4)}
-                                    </li>
-                                ))}
-                            </ul>
-                        </div>
-                    </div>
-                </div>
-
-                {/* TPMs Section */}
-                <div>
-                    <h4 className="text-lg font-semibold mb-3">Individual Transition Probability Matrices</h4>
-                    <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-                        {tpms_firstOrder.map(({ tpm, label }) => (
-                            <TPMDisplay key={label} tpm={tpm} title={label} stateSpace={stateSpace} />
-                        ))}
-                    </div>
-                </div>
-
-                 <div className="flex justify-end pt-4 border-t border-gray-200 dark:border-gray-700 mt-6">
-                    <button onClick={onClose} className="px-4 py-2 font-semibold text-white bg-blue-600 rounded-md hover:bg-blue-700">Close</button>
-                 </div>
-            </div>
-        </div>
-    );
-};
-
-
-// --- NEW COMPONENT: MarkovianFitDetailsModal ---
-const MarkovianFitDetailsModal: React.FC<{
-    isOpen: boolean;
-    onClose: () => void;
-    results: TimeSeriesAnalysisResults;
-}> = ({ isOpen, onClose, results }) => {
-    if (!isOpen) return null;
-
-    const { markovianFit, isHomogeneous, tpms_firstOrder, average_tpm_firstOrder, stateSpace, weakStationarity } = results;
-    const representativeTPM = isHomogeneous ? tpms_firstOrder[0] : average_tpm_firstOrder;
-    
-    // For the calculation example
-    const exampleSequence = markovianFit.fullHistoryPMF.keys().next().value || '';
-    const exampleStates = exampleSequence.split(',');
-    const initialProb = (markovianFit.initialStatePMF?.get(exampleStates[0]) || 0);
-    
-    let calcString = `${initialProb.toFixed(3)} (P(${exampleStates[0]}))`;
-    let runningProb = initialProb;
-    const transitionCalcs = [];
-
-    for (let i = 1; i < exampleStates.length; i++) {
-        const from = exampleStates[i-1];
-        const to = exampleStates[i];
-        const transProb = representativeTPM.tpm.get(from)?.get(to) || 0;
-        runningProb *= transProb;
-        calcString += ` * ${transProb.toFixed(3)}`;
-        transitionCalcs.push({from, to, prob: transProb});
-    }
-    calcString += ` = ${runningProb.toFixed(4)}`;
-
-
-    return (
-        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4 transition-opacity" onClick={onClose}>
-            <div className="bg-white dark:bg-gray-900 p-6 rounded-lg shadow-2xl max-w-6xl w-full transform transition-all space-y-6 max-h-[90vh] overflow-y-auto" onClick={e => e.stopPropagation()}>
-                <div className="flex justify-between items-center border-b border-gray-200 dark:border-gray-700 pb-3">
-                    <h3 className="text-2xl font-bold">Markovian Model Fit Details</h3>
-                    <button onClick={onClose} className="text-gray-400 hover:text-gray-600 dark:hover:text-gray-200 text-3xl font-bold">&times;</button>
-                </div>
-
-                {/* Distributions Section */}
-                <div>
-                    <h4 className="text-lg font-semibold mb-3">Joint Probability Distributions</h4>
-                    <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-                        <JointPMFTable pmf={markovianFit.fullHistoryPMF} title="Empirical (from Data)" timeLabels={weakStationarity.timeLabels} />
-                        <JointPMFTable pmf={markovianFit.markovApproximationPMF} title="Markovian Approximation" timeLabels={weakStationarity.timeLabels} />
-                    </div>
-                </div>
-
-                 {/* Calculation Section */}
-                <div>
-                    <h4 className="text-lg font-semibold mb-3">Approximation Calculation</h4>
-                    <div className="p-4 bg-gray-50 dark:bg-gray-800/50 rounded-lg space-y-4">
-                        <p className="text-sm">The Markovian approximation is built using the chain rule: <br/><code className="font-mono bg-gray-200 dark:bg-gray-700 p-1 rounded">P(Xn,...,X1) = P(X1) * P(X2|X1) * ... * P(Xn|Xn-1)</code>.</p>
-                        <p className="text-sm">The conditional probabilities `P(Xt | Xt-1)` are taken from the single representative TPM below.</p>
-                        <div className="flex justify-center">
-                           {representativeTPM && <TPMDisplay tpm={representativeTPM.tpm} title={`Representative TPM (${representativeTPM.label})`} stateSpace={stateSpace} />}
-                        </div>
-                         <div>
-                            <p className="text-sm font-semibold">Example Calculation for sequence "{exampleSequence}":</p>
-                            <div className="text-xs font-mono bg-white dark:bg-gray-900 p-3 mt-2 rounded border border-gray-200 dark:border-gray-700 overflow-x-auto">
-                               {calcString}
-                            </div>
-                        </div>
-                    </div>
-                </div>
-
-                 <div className="flex justify-end pt-4 border-t border-gray-200 dark:border-gray-700 mt-6">
-                    <button onClick={onClose} className="px-4 py-2 font-semibold text-white bg-blue-600 rounded-md hover:bg-blue-700">Close</button>
-                 </div>
-            </div>
-        </div>
-    );
-};
-
-
-// --- NEW COMPONENT: StationaryAnalysis ---
-const StationaryAnalysis: React.FC<{ results: TimeSeriesAnalysisResults['weakStationarity'] }> = ({ results }) => {
-    const [isModalOpen, setIsModalOpen] = useState(false);
-    const chartData = results.timeLabels.map((time, i) => ({
-        time,
-        mean: results.mean[i],
-        variance: results.variance[i],
-    }));
-
-    return (
-        <div className="space-y-4">
-            <div className="flex justify-between items-center">
-                <h3 className="text-xl font-semibold">Weak Stationarity Analysis</h3>
-                <button
-                    onClick={() => setIsModalOpen(true)}
-                    className="px-3 py-1.5 text-sm font-medium text-white bg-blue-600 rounded-md hover:bg-blue-700 transition-colors"
-                >
-                    Interpret Results
-                </button>
-            </div>
-            <p className="text-sm text-gray-600 dark:text-gray-400">
-                A process is weakly stationary if its mean and variance remain constant over time. Do the plots below appear relatively flat?
-            </p>
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-                <div className="p-4 bg-gray-50 dark:bg-gray-800/50 rounded-lg">
-                    <h4 className="font-semibold mb-2">Mean Over Time</h4>
-                    <ResponsiveContainer width="100%" height={250}>
-                        <LineChart data={chartData} margin={{ top: 5, right: 20, left: -10, bottom: 5 }}>
-                            <CartesianGrid strokeDasharray="3 3" strokeOpacity={0.2}/>
-                            <XAxis dataKey="time" />
-                            <YAxis />
-                            <Tooltip />
-                            <Legend />
-                            <Line type="monotone" dataKey="mean" stroke="#8884d8" strokeWidth={2} />
-                        </LineChart>
-                    </ResponsiveContainer>
-                </div>
-                 <div className="p-4 bg-gray-50 dark:bg-gray-800/50 rounded-lg">
-                    <h4 className="font-semibold mb-2">Variance Over Time</h4>
-                    <ResponsiveContainer width="100%" height={250}>
-                        <LineChart data={chartData} margin={{ top: 5, right: 20, left: -10, bottom: 5 }}>
-                            <CartesianGrid strokeDasharray="3 3" strokeOpacity={0.2}/>
-                            <XAxis dataKey="time" />
-                            <YAxis />
-                            <Tooltip />
-                            <Legend />
-                            <Line type="monotone" dataKey="variance" stroke="#82ca9d" strokeWidth={2} />
-                        </LineChart>
-                    </ResponsiveContainer>
-                </div>
-            </div>
-            {isModalOpen && (
-                <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 transition-opacity" onClick={() => setIsModalOpen(false)}>
-                    <div className="bg-white dark:bg-gray-900 p-8 rounded-lg shadow-2xl max-w-lg w-full transform transition-all" onClick={e => e.stopPropagation()}>
-                        <h3 className="text-2xl font-bold mb-4">Is a Stationary Approximation Good Enough?</h3>
-                        <p className="text-gray-700 dark:text-gray-300 mb-6">
-                            For many applications, if the mean and variance plots are "flat enough" (i.e., they don't show strong trends or seasonality), you can approximate the process as stationary. This simplifies modeling significantly. However, for rigorous conclusions, a statistical test is recommended.
-                        </p>
-                         <div className="flex justify-end space-x-4">
-                            <button onClick={() => setIsModalOpen(false)} className="px-4 py-2 font-semibold text-gray-700 bg-gray-200 dark:bg-gray-700 dark:text-gray-200 rounded-md hover:bg-gray-300 dark:hover:bg-gray-600">Got it</button>
-                            <button onClick={() => setIsModalOpen(false)} className="px-4 py-2 font-semibold text-white bg-blue-600 rounded-md hover:bg-blue-700">Run Statistical Test (Future Feature)</button>
-                         </div>
-                    </div>
-                </div>
-            )}
-        </div>
-    )
-};
-
-
-// --- NEW COMPONENT: TimeSeriesAnalysis ---
-const TimeSeriesAnalysis: React.FC<{ results: TimeSeriesAnalysisResults }> = ({ results }) => {
-    const [isHomogeneityModalOpen, setIsHomogeneityModalOpen] = useState(false);
-    const [isMarkovianFitModalOpen, setIsMarkovianFitModalOpen] = useState(false);
-    const { isHomogeneous, tpms_firstOrder, average_tpm_firstOrder, stateSpace, markovianFit } = results;
-
-    const renderTPMs = () => {
-        if (isHomogeneous) {
-            return (
-                 <div className="space-y-4">
-                    <p className="text-sm text-gray-600 dark:text-gray-400">
-                        Since the system is time-homogeneous, the transition probabilities are stable over time. The matrix for the first transition (Day 1 → Day 2) is a good representative for the entire process.
-                    </p>
-                    {tpms_firstOrder.length > 0 &&
-                        <TPMDisplay tpm={tpms_firstOrder[0].tpm} title="Transition Probability Matrix (Day 1 → Day 2)" stateSpace={stateSpace} />
-                    }
-                </div>
-            );
-        } else {
-             return (
-                <div className="space-y-4">
-                    <p className="text-sm text-gray-600 dark:text-gray-400">
-                        Since the system is NOT time-homogeneous, the transition probabilities change over time. The best single representation is the time-averaged matrix, which averages the probabilities across all transitions.
-                    </p>
-                    <TPMDisplay tpm={average_tpm_firstOrder.tpm} title="Time-Averaged Transition Probability Matrix" stateSpace={stateSpace} />
-                </div>
-            );
-        }
-    };
-
-    return (
-        <div className="bg-white dark:bg-gray-900 p-6 rounded-lg shadow-lg space-y-8">
-            <div>
-                <h2 className="text-2xl font-semibold text-gray-800 dark:text-white mb-4 border-b border-gray-200 dark:border-gray-700 pb-4">Time-Series Analysis Report</h2>
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-6 text-center">
-                    <div className="p-4 bg-gray-50 dark:bg-gray-800/50 rounded-lg">
-                        <h3 className="font-semibold text-lg mb-2">Is time homogeneity a valid assumption?</h3>
-                        <div className="flex items-center justify-center space-x-4">
-                            <p className={`text-2xl font-bold ${results.isHomogeneous ? 'text-green-600' : 'text-red-600'}`}>
-                                {results.isHomogeneous ? 'Yes' : 'No'}
-                            </p>
-                            <button
-                                onClick={() => setIsHomogeneityModalOpen(true)}
-                                className="px-3 py-1.5 text-xs font-medium text-blue-700 bg-blue-100 dark:bg-blue-900/50 dark:text-blue-300 rounded-md hover:bg-blue-200 dark:hover:bg-blue-800 transition-colors"
-                            >
-                                View Details
-                            </button>
-                        </div>
-                         <p className="text-xs text-gray-500 mt-2">Based on Hellinger & GJS distances</p>
-                    </div>
-                     <div className="p-4 bg-gray-50 dark:bg-gray-800/50 rounded-lg">
-                        <h3 className="font-semibold text-lg mb-2">Markovian Model Fit</h3>
-                        <div className="grid grid-cols-2 gap-2 text-center">
-                            <div>
-                                <p className="text-xs text-gray-500">Hellinger Distance</p>
-                                <p className="text-2xl font-bold font-mono text-indigo-600 dark:text-indigo-400">{markovianFit.hellingerDistance.toFixed(4)}</p>
-                            </div>
-                            <div>
-                                <p className="text-xs text-gray-500">JS Distance</p>
-                                <p className="text-2xl font-bold font-mono text-indigo-600 dark:text-indigo-400">{markovianFit.jensenShannonDistance.toFixed(4)}</p>
-                            </div>
-                        </div>
-                         <div className="flex items-center justify-center space-x-4 mt-2">
-                             <p className="text-xs text-gray-500">Distance between true history and Markov model. Lower is better.</p>
-                             <button
-                                onClick={() => setIsMarkovianFitModalOpen(true)}
-                                className="px-3 py-1.5 text-xs font-medium text-blue-700 bg-blue-100 dark:bg-blue-900/50 dark:text-blue-300 rounded-md hover:bg-blue-200 dark:hover:bg-blue-800 transition-colors"
-                            >
-                                View Details
-                            </button>
-                         </div>
-                    </div>
-                </div>
-            </div>
-            <div className="border-t border-gray-200 dark:border-gray-700 pt-6">
-                 {renderTPMs()}
-            </div>
-            <div className="border-t border-gray-200 dark:border-gray-700 pt-6">
-                <StationaryAnalysis results={results.weakStationarity} />
-            </div>
-             <HomogeneityDetailsModal
-                isOpen={isHomogeneityModalOpen}
-                onClose={() => setIsHomogeneityModalOpen(false)}
-                results={results}
-            />
-             <MarkovianFitDetailsModal
-                isOpen={isMarkovianFitModalOpen}
-                onClose={() => setIsMarkovianFitModalOpen(false)}
-                results={results}
-            />
-        </div>
-    )
-};
+import TimeSeriesAnalysis from './components/TimeSeriesAnalysis';
+import { IconChartBar, IconCode, IconInfoCircle, IconDownload, IconTable, IconUpload, IconTrash, IconFileText, IconTarget } from './components/Icons';
 
 
 const App: React.FC = () => {
@@ -389,24 +29,11 @@ const App: React.FC = () => {
         }
     ]);
     const fileInputRef = useRef<HTMLInputElement>(null);
+    const sessionFileInputRef = useRef<HTMLInputElement>(null);
 
     const [analysisMode, setAnalysisMode] = useState<'cross-sectional' | 'time-series' | null>(null);
     const [crossSectionalResults, setCrossSectionalResults] = useState<AnalysisResults | null>(null);
     const [timeSeriesResults, setTimeSeriesResults] = useState<TimeSeriesAnalysisResults | null>(null);
-
-    const generateDistributionString = (model: TheoreticalModel, varNames: string[]): string => {
-        if (varNames.length === 0) return '';
-        const header = [...varNames, 'Probability'].join(',');
-        const rows = Object.entries(model.jointProbabilities)
-            .map(([key, probStr]) => {
-                const prob = parseFloat(probStr as string);
-                if (!key || isNaN(prob) || prob <= 0) return null;
-                return `${key},${prob}`;
-            })
-            .filter(Boolean);
-
-        return [header, ...rows].join('\n');
-    };
 
     const variables = useMemo(() => crossSectionalResults?.variables || [], [crossSectionalResults]);
     
@@ -419,15 +46,20 @@ const App: React.FC = () => {
             return true;
         }
         return theoreticalModels.every(model => {
-             const sum = Object.values(model.jointProbabilities).reduce((acc: number, probStr: string | number) => {
+            // FIX: The `reduce` method for calculating the sum of probabilities was causing a type error in some environments. It has been replaced with a more explicit for-loop to ensure type safety.
+            let sum = 0;
+            for (const probStr of Object.values(model.jointProbabilities)) {
                 const prob = Number(probStr);
-                return isNaN(prob) ? acc : acc + prob;
-            }, 0);
+                if (!isNaN(prob)) {
+                    sum += prob;
+                }
+            }
             // FIX: Correctly handle potentially undefined state spaces to avoid runtime errors
             // and ensure correct type inference for `stateSpaces`.
              const stateSpaces = variables.map(v => (model.stateSpaces[v.name]?.split(',') ?? []).map(s => s.trim()).filter(s => s));
              if (stateSpaces.some(s => s.length === 0)) return true;
 
+            // FIX: Replaced reduce with a for-loop to prevent potential type inference issues with the accumulator in some environments.
             let expectedProbs = 1;
             for (const space of stateSpaces) {
                 expectedProbs *= space.length;
@@ -451,13 +83,26 @@ const App: React.FC = () => {
                 setAnalysisMode(mode);
 
                 if (mode === 'cross-sectional') {
-                    const dataVarNames = parseInput(inputText).map(v => v.name);
+                    const parsedData = parseInput(inputText);
+                    const initialVariables: RandomVariable[] = parsedData.map((v, i) => ({
+                        id: `var-${i}-${Date.now()}`,
+                        name: v.name,
+                        data: v.data,
+                        type: detectVariableType(v.data),
+                        ordinalOrder: [],
+                    }));
+
+                    if(initialVariables.length === 0) {
+                        throw new Error("No data variables found in input.");
+                    }
+
+                    const dataVarNames = initialVariables.map(v => v.name);
                     const modelsForAnalysis = theoreticalModels.map(m => ({
                         ...m,
-                        distribution: generateDistributionString(m, dataVarNames)
+                        distribution: createDistributionStringFromModel(m, dataVarNames)
                     }));
                     
-                    const fullResults = performFullAnalysis(inputText, modelsForAnalysis);
+                    const fullResults = performFullAnalysis(initialVariables, modelsForAnalysis);
                     setCrossSectionalResults(fullResults);
 
                     if (fullResults.variables.length > 1) setActiveTab('pairwise');
@@ -479,6 +124,74 @@ const App: React.FC = () => {
                 setIsLoading(false);
             }
         }, 50);
+    };
+
+    const handleExportSession = () => {
+        const sessionData = {
+            inputText,
+            theoreticalModels,
+        };
+        const content = JSON.stringify(sessionData, null, 2);
+        const blob = new Blob([content], { type: 'application/json;charset=utf-8;' });
+        const url = URL.createObjectURL(blob);
+        const link = document.createElement("a");
+        link.setAttribute("href", url);
+        link.setAttribute("download", "stochastic_analysis_session.json");
+        document.body.appendChild(link);
+        link.click();
+        document.body.removeChild(link);
+        URL.revokeObjectURL(url);
+    };
+
+    const handleImportSession = (event: React.ChangeEvent<HTMLInputElement>) => {
+        const file = event.target.files?.[0];
+        if (!file) return;
+
+        const reader = new FileReader();
+        reader.onload = (e) => {
+            try {
+                const content = e.target?.result as string;
+                if (!content) {
+                    throw new Error("File is empty or could not be read.");
+                }
+                const sessionData = JSON.parse(content);
+
+                if (
+                    typeof sessionData === 'object' &&
+                    sessionData !== null &&
+                    'inputText' in sessionData &&
+                    typeof sessionData.inputText === 'string' &&
+                    'theoreticalModels' in sessionData &&
+                    Array.isArray(sessionData.theoreticalModels)
+                ) {
+                    setInputText(sessionData.inputText);
+                    setTheoreticalModels(sessionData.theoreticalModels as TheoreticalModel[]);
+                    setCrossSectionalResults(null);
+                    setTimeSeriesResults(null);
+                    setAnalysisMode(null);
+                    setError(null);
+                } else {
+                    throw new Error("Invalid session file format. Expected 'inputText' and 'theoreticalModels' properties.");
+                }
+            } catch (err) {
+                if (err instanceof Error) {
+                    setError(`Failed to import session: ${err.message}`);
+                } else {
+                    setError("An unknown error occurred during session import.");
+                }
+            } finally {
+                if (event.target) {
+                    event.target.value = "";
+                }
+            }
+        };
+        reader.onerror = () => {
+            setError("Failed to read the selected session file.");
+            if (event.target) {
+                event.target.value = "";
+            }
+        };
+        reader.readAsText(file);
     };
 
     const handleExport = (format: 'json' | 'csv') => {
@@ -570,12 +283,37 @@ const App: React.FC = () => {
 
 
     const updateVariable = (id: string, updatedProps: Partial<RandomVariable>) => {
-        setCrossSectionalResults(prev => {
-            if (!prev) return null;
-            const newVars = prev.variables.map(v => (v.id === id ? { ...v, ...updatedProps } : v));
-            // This is a simplification; a full re-analysis would be needed.
-            return { ...prev, variables: newVars };
-        });
+        if (!crossSectionalResults) return;
+
+        const updatedVariables = crossSectionalResults.variables.map(v =>
+            (v.id === id ? { ...v, ...updatedProps } : v)
+        );
+
+        // Re-run analysis with the updated variables
+        setIsLoading(true);
+        setError(null);
+
+        setTimeout(() => {
+            try {
+                const dataVarNames = updatedVariables.map(v => v.name);
+                const modelsForAnalysis = theoreticalModels.map(m => ({
+                    ...m,
+                    distribution: createDistributionStringFromModel(m, dataVarNames)
+                }));
+                
+                const fullResults = performFullAnalysis(updatedVariables, modelsForAnalysis);
+                setCrossSectionalResults(fullResults);
+
+            } catch (e) {
+                if (e instanceof Error) {
+                    setError(`Failed to re-analyze: ${e.message}`);
+                } else {
+                    setError('An unknown error occurred during re-analysis.');
+                }
+            } finally {
+                setIsLoading(false);
+            }
+        }, 50);
     };
 
     const addModel = () => {
@@ -599,6 +337,29 @@ const App: React.FC = () => {
                     <div className="flex items-center space-x-3">
                         <IconCode className="w-8 h-8 text-blue-600 dark:text-blue-400" />
                         <h1 className="text-2xl font-bold text-gray-800 dark:text-white">Stochastic Analysis Engine</h1>
+                    </div>
+                    <div className="flex items-center space-x-4">
+                        <input
+                            type="file"
+                            ref={sessionFileInputRef}
+                            onChange={handleImportSession}
+                            accept=".json"
+                            className="hidden"
+                        />
+                        <button
+                            onClick={() => sessionFileInputRef.current?.click()}
+                            className="px-3 py-2 text-sm font-medium text-blue-600 bg-blue-100 dark:bg-blue-900/50 dark:text-blue-300 rounded-md hover:bg-blue-200 dark:hover:bg-blue-800 transition-colors flex items-center space-x-2"
+                        >
+                            <IconUpload className="w-4 h-4" />
+                            <span>Import Session</span>
+                        </button>
+                        <button
+                            onClick={handleExportSession}
+                            className="px-3 py-2 text-sm font-medium text-green-600 bg-green-100 dark:bg-green-900/50 dark:text-green-300 rounded-md hover:bg-green-200 dark:hover:bg-green-800 transition-colors flex items-center space-x-2"
+                        >
+                            <IconDownload className="w-4 h-4" />
+                            <span>Export Session</span>
+                        </button>
                     </div>
                 </div>
             </header>
