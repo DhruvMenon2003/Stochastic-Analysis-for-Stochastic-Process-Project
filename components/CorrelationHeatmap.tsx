@@ -1,5 +1,5 @@
 import React, { useState, useMemo, useEffect } from 'react';
-import { type PairwiseResult, type RandomVariable, type TheoreticalModel, PairwiseMetrics } from '../types';
+import { type PairwiseResult, type RandomVariable, type TheoreticalModel, PairwiseMetrics, VariableType } from '../types';
 
 type MetricKey = keyof PairwiseMetrics;
 
@@ -13,6 +13,7 @@ const METRICS: { key: MetricKey; label: string; range: [number, number] }[] = [
     { key: 'distanceCorrelation', label: 'Distance', range: [0, 1] },
     { key: 'pearsonCorrelation', label: 'Pearson', range: [-1, 1] },
     { key: 'mutualInformation', label: 'Mutual Info', range: [0, 1] },
+    { key: 'cramersV', label: "Cramer's V", range: [0, 1] },
 ];
 
 const parseHsl = (hslString: string): { h: number, s: number, l: number } | null => {
@@ -51,12 +52,11 @@ const CorrelationHeatmap: React.FC<CorrelationHeatmapProps> = ({ pairwiseResults
         const matrix: (number | undefined)[][] = Array(variables.length).fill(null).map(() => Array(variables.length).fill(undefined));
         
         for (let i = 0; i < variables.length; i++) {
+            const v = variables[i];
+            const isCategorical = v.type === VariableType.Nominal || v.type === VariableType.Ordinal;
             matrix[i][i] = selectedMetric === 'pearsonCorrelation' ? 1.0 : undefined;
-             if (selectedMetric === 'distanceCorrelation') matrix[i][i] = 1.0; // Perfect correlation with self
-             if (selectedMetric === 'mutualInformation') {
-                 // Self-information could be calculated, but for a correlation matrix, diagonal is often left blank or as 1.
-                 // For simplicity, we leave it undefined.
-             }
+             if (selectedMetric === 'distanceCorrelation') matrix[i][i] = 1.0; 
+             if (selectedMetric === 'cramersV' && isCategorical) matrix[i][i] = 1.0;
         }
 
         pairwiseResults.forEach(res => {

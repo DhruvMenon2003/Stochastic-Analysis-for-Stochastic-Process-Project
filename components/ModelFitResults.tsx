@@ -31,9 +31,10 @@ const ModelFitTable: React.FC<ModelFitResultsProps> = ({ modelFitResults }) => {
         const metricList = Array.from(metrics).sort((a, b) => {
             const getRank = (m: string) => {
                 if (m.includes('Distance')) return 0;
-                if (m.startsWith('Cumulative')) return 1;
-                if (m.startsWith('MSE:')) return 2;
-                return 3;
+                if (m.startsWith('Cumulative MSE')) return 1;
+                if (m.startsWith('MSE:') && m.includes('|')) return 2;
+                if (m.startsWith('MSE:')) return 3;
+                return 4;
             };
             const rankA = getRank(a);
             const rankB = getRank(b);

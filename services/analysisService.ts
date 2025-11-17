@@ -248,6 +248,48 @@ const calculateMutualInformation = (jointPMF: JointPMF, marginal1: JointPMF, mar
 };
 
 /**
+ * Calculates Cramer's V for two categorical variables.
+ */
+const calculateCramersV = (data1: string[], data2: string[]): number => {
+    const n = data1.length;
+    if (n === 0) return 0;
+
+    const levels1 = [...new Set(data1)];
+    const levels2 = [...new Set(data2)];
+    const r = levels1.length;
+    const k = levels2.length;
+    if (r < 2 || k < 2) return 0;
+
+    const contingencyTable: { [key1: string]: { [key2: string]: number } } = {};
+    levels1.forEach(l1 => {
+        contingencyTable[l1] = {};
+        levels2.forEach(l2 => contingencyTable[l1][l2] = 0);
+    });
+
+    for (let i = 0; i < n; i++) {
+        contingencyTable[data1[i]][data2[i]]++;
+    }
+
+    let chi2 = 0;
+    for (let i = 0; i < r; i++) {
+        for (let j = 0; j < k; j++) {
+            const rowTotal = Object.values(contingencyTable[levels1[i]]).reduce((a, b) => a + b, 0);
+            const colTotal = levels1.reduce((sum, l1) => sum + contingencyTable[l1][levels2[j]], 0);
+            const expected = (rowTotal * colTotal) / n;
+            if (expected > 0) {
+                const observed = contingencyTable[levels1[i]][levels2[j]];
+                chi2 += Math.pow(observed - expected, 2) / expected;
+            }
+        }
+    }
+    
+    const minDim = Math.min(k - 1, r - 1);
+    if (minDim === 0) return 0;
+
+    return Math.sqrt(chi2 / (n * minDim));
+};
+
+/**
  * Calculates conditional distributions for a pair of variables.
  */
 const getConditionalDistributions = (
@@ -479,7 +521,7 @@ export const exportToCsv = (results: AnalysisResults, variables: RandomVariable[
         const modelNames = Object.keys(firstPair.theoretical);
         csv += `Variable 1,Variable 2,Metric,Empirical,${modelNames.map(formatCsvValue).join(',')}\n`;
 
-        const pairwiseMetrics: (keyof PairwiseMetrics)[] = ['distanceCorrelation', 'pearsonCorrelation', 'mutualInformation'];
+        const pairwiseMetrics: (keyof PairwiseMetrics)[] = ['distanceCorrelation', 'pearsonCorrelation', 'mutualInformation', 'cramersV'];
         results.pairwise.forEach(pair => {
             pairwiseMetrics.forEach(metric => {
                 if (pair.empirical[metric] !== undefined) {
@@ -557,6 +599,9 @@ export const performFullAnalysis = (inputText: string, theoreticalModels: Theore
             const jointPMF = getMarginalPMF(empiricalJointPMF, [i, j], numVars);
             const marginal1 = empiricalMarginals[var1.id];
             const marginal2 = empiricalMarginals[var2.id];
+            
+            const isVar1Categorical = var1.type === VariableType.Nominal || var1.type === VariableType.Ordinal;
+            const isVar2Categorical = var2.type === VariableType.Nominal || var2.type === VariableType.Ordinal;
 
             pairwise.push({
                 var1_id: var1.id, var1_name: var1.name, var2_id: var2.id, var2_name: var2.name,
@@ -564,6 +609,7 @@ export const performFullAnalysis = (inputText: string, theoreticalModels: Theore
                     distanceCorrelation: calculateDistanceCorrelation(var1.data, var2.data),
                     mutualInformation: calculateMutualInformation(jointPMF, marginal1, marginal2),
                     pearsonCorrelation: (var1.type === VariableType.Numerical && var2.type === VariableType.Numerical) ? calculatePearsonCorrelation(var1.data, var2.data) : undefined,
+                    cramersV: (isVar1Categorical && isVar2Categorical) ? calculateCramersV(var1.data, var2.data) : undefined,
                 },
                 theoretical: {},
             });
@@ -615,6 +661,11 @@ export const performFullAnalysis = (inputText: string, theoreticalModels: Theore
                 
                 const pairResult = pairwise.find(p => p.var1_id === var1.id && p.var2_id === var2.id);
                 if (pairResult) {
+                     const isVar1Categorical = var1.type === VariableType.Nominal || var1.type === VariableType.Ordinal;
+                     const isVar2Categorical = var2.type === VariableType.Nominal || var2.type === VariableType.Ordinal;
+                     
+                     // Need to get model data to calculate Cramer's V. This is complex.
+                     // For now, only calculating MI for theoretical models.
                     pairResult.theoretical[model.id] = {
                         mutualInformation: calculateMutualInformation(modelPairPMF, modelMarginal1, modelMarginal2),
                     };
@@ -626,7 +677,22 @@ export const performFullAnalysis = (inputText: string, theoreticalModels: Theore
             }
         }
         
-        // Calculate Conditional MSE
+        // --- MSE Calculations ---
+
+        // Single-variable MSE for numerical variables
+        variables.forEach(v => {
+            if (v.type === VariableType.Numerical) {
+                const empiricalMetrics = single_vars[v.id].empirical;
+                const modelMetrics = single_vars[v.id].theoretical[model.id];
+                if (empiricalMetrics.mean !== undefined && modelMetrics.mean !== undefined && modelMetrics.variance !== undefined) {
+                    const bias = modelMetrics.mean - empiricalMetrics.mean;
+                    const mse = modelMetrics.variance + (bias * bias);
+                    mseMetrics[`MSE: ${v.name}`] = mse;
+                }
+            }
+        });
+
+        // Conditional MSE (Numerical | Categorical)
         for (let i = 0; i < numVars; i++) {
             for (let j = 0; j < numVars; j++) {
                 if (i === j) continue;
@@ -634,11 +700,15 @@ export const performFullAnalysis = (inputText: string, theoreticalModels: Theore
                 const targetVar = variables[i];
                 const givenVar = variables[j];
                 
-                if (targetVar.type === VariableType.Numerical && (givenVar.type === VariableType.Nominal || givenVar.type === VariableType.Ordinal)) {
+                const isTargetNumerical = targetVar.type === VariableType.Numerical;
+                const isGivenCategorical = givenVar.type === VariableType.Nominal || givenVar.type === VariableType.Ordinal;
+
+                if (isTargetNumerical && isGivenCategorical) {
                     const pairKey = [targetVar.id, givenVar.id].sort().join('-');
                     const modelConditionals = conditional[pairKey]?.theoretical[model.id]?.[givenVar.name];
+                    const empiricalMarginal = single_vars[givenVar.id].empirical.pmf;
                     
-                    if (!modelConditionals) continue;
+                    if (!modelConditionals || !empiricalMarginal) continue;
 
                     const predictions = new Map<string, number>(); // conditionValue -> predictedMean
                     modelConditionals.forEach(cond => {
@@ -646,7 +716,6 @@ export const performFullAnalysis = (inputText: string, theoreticalModels: Theore
                     });
                     
                     const squaredErrorsByCondition: { [condition: string]: number[] } = {};
-                    let totalSquaredError = 0;
                     
                     for (let k = 0; k < targetVar.data.length; k++) {
                         const trueValue = Number(targetVar.data[k]);
@@ -654,9 +723,7 @@ export const performFullAnalysis = (inputText: string, theoreticalModels: Theore
                         const predictedValue = predictions.get(conditionValue);
                         
                         if (!isNaN(trueValue) && predictedValue !== undefined) {
-                            const error = trueValue - predictedValue;
-                            const sqError = error * error;
-                            totalSquaredError += sqError;
+                            const sqError = Math.pow(trueValue - predictedValue, 2);
                             if (!squaredErrorsByCondition[conditionValue]) {
                                 squaredErrorsByCondition[conditionValue] = [];
                             }
@@ -664,14 +731,23 @@ export const performFullAnalysis = (inputText: string, theoreticalModels: Theore
                         }
                     }
                     
-                    const metricName = `Cumulative MSE (${targetVar.name} | ${givenVar.name})`;
-                    mseMetrics[metricName] = totalSquaredError / targetVar.data.length;
-
+                    let cumulativeMSE = 0;
+                    
                     Object.entries(squaredErrorsByCondition).forEach(([condition, errors]) => {
-                        const mse = errors.reduce((a, b) => a + b, 0) / errors.length;
-                        const perConditionMetricName = `MSE: ${targetVar.name} | ${givenVar.name}=${condition}`;
-                        mseMetrics[perConditionMetricName] = mse;
+                        if (errors.length > 0) {
+                            const mse = errors.reduce((a, b) => a + b, 0) / errors.length;
+                            const perConditionMetricName = `MSE: ${targetVar.name} | ${givenVar.name}=${condition}`;
+                            mseMetrics[perConditionMetricName] = mse;
+                            
+                            const marginalProb = empiricalMarginal.find(p => p.value == condition)?.probability || 0;
+                            cumulativeMSE += mse * marginalProb;
+                        }
                     });
+                    
+                    if (cumulativeMSE > 0) {
+                        const metricName = `Cumulative MSE (${targetVar.name} | ${givenVar.name})`;
+                        mseMetrics[metricName] = cumulativeMSE;
+                    }
                 }
             }
         }

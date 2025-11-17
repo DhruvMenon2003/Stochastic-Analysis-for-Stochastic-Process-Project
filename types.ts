@@ -37,6 +37,7 @@ export interface PairwiseMetrics {
     pearsonCorrelation?: number;
     mutualInformation?: number;
     distanceCorrelation?: number;
+    cramersV?: number;
 }
 
 export interface PairwiseResult {
